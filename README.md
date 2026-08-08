@@ -206,20 +206,20 @@ tokens:
     address: DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263
     enabled: true
 
-    fibPivotWindow: 5
-    goldenPocketZonePct: 1
-    swingLookbackHours: 72
+    fibPivotWindow: 3
+    goldenPocketZonePct: 2.5
+    swingLookbackHours: 96
 
-    trendSmaPeriod: 50
-    chopLookbackPeriods: 20
-    chopMaxCrossings: 3
+    trendSmaPeriod: 20
+    chopLookbackPeriods: 15
+    chopMaxCrossings: 6
 
     rsiPeriod: 14
-    rsiMidline: 50
-    rsiOverboughtCeiling: 70
+    rsiMidline: 60
+    rsiOverboughtCeiling: 78
 
-    volumeAvgPeriod: 20
-    volumeConfirmationMultiplier: 1.5
+    volumeAvgPeriod: 15
+    volumeConfirmationMultiplier: 1.2
 
     minBuyUsd: 5000
     maxBuyPctOfLiquidity: 3
@@ -245,6 +245,15 @@ risk:
   weeklyLossLimitPct: 8
   consecutiveLossLimit: 4
 ```
+
+These defaults are tuned deliberately loose (a 20-period trend SMA rather
+than 50, a 2.5% golden-pocket zone rather than 1%, RSI midline 60 rather than
+50, 6 allowed MA crossings rather than 3) after the first live run showed the
+tighter starting values essentially never firing on BONK/WIF -- a 50-period
+SMA on hourly candles is a ~2-day lookback that doesn't react to a meme
+coin's actual recent structure, and 1% around a fib level is a needle's-eye
+target. If a week of paper data shows these are now firing on setups too
+weak to trust, this is exactly where to tighten back up per-token.
 
 `scaleOutPct1 + scaleOutPct2` must leave a remainder for the runner, and
 `extensionRatio2` must exceed `extensionRatio1` (both validated at load

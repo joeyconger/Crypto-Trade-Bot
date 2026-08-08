@@ -14,23 +14,26 @@ tokens:
     enabled: true
 
     # --- fib zone + structural confluence ---
-    fibPivotWindow: 5 # candles required on each side to confirm a swing pivot
-    goldenPocketZonePct: 1 # price must be within this % of the 0.5/0.618 retracement, and that level within this % of a prior pivot
-    swingLookbackHours: 72 # how much price history to pull for pivot/indicator calculation
+    fibPivotWindow: 3 # candles required on each side to confirm a swing pivot -- lower = fresher/faster-confirming swings
+    goldenPocketZonePct: 2.5 # price must be within this % of the 0.5/0.618 retracement, and that level within this % of a prior pivot
+    swingLookbackHours: 96 # how much price history to pull for pivot/indicator calculation
 
     # --- trend context filter (don't fight the trend) ---
-    trendSmaPeriod: 50
-    chopLookbackPeriods: 20 # window to count MA crossings in
-    chopMaxCrossings: 3 # this many crossings in the window means "too choppy," skip
+    # A 50-period SMA on hourly candles is a ~2-day lookback -- too slow to
+    # react to a meme coin's actual recent structure. 20 periods (~20h) tracks
+    # it much more responsively while still refusing to buy a real downtrend.
+    trendSmaPeriod: 20
+    chopLookbackPeriods: 15 # window to count MA crossings in
+    chopMaxCrossings: 6 # this many crossings in the window means "too choppy," skip -- meme coins whipsaw more than a stricter threshold assumes
 
     # --- momentum confirmation (buy the reaction, not the touch) ---
     rsiPeriod: 14
-    rsiMidline: 50 # RSI must be below this and rising
-    rsiOverboughtCeiling: 70 # RSI above this means chasing, not catching a pullback
+    rsiMidline: 60 # RSI must be below this and rising
+    rsiOverboughtCeiling: 78 # RSI above this means chasing, not catching a pullback
 
     # --- volume confirmation on the reaction candle ---
-    volumeAvgPeriod: 20
-    volumeConfirmationMultiplier: 1.5
+    volumeAvgPeriod: 15
+    volumeConfirmationMultiplier: 1.2
 
     # --- on-chain confluence (optional, non-blocking) ---
     minBuyUsd: 5000
@@ -57,20 +60,20 @@ tokens:
     address: EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm
     enabled: true
 
-    fibPivotWindow: 5
-    goldenPocketZonePct: 1
-    swingLookbackHours: 72
+    fibPivotWindow: 3
+    goldenPocketZonePct: 2.5
+    swingLookbackHours: 96
 
-    trendSmaPeriod: 50
-    chopLookbackPeriods: 20
-    chopMaxCrossings: 3
+    trendSmaPeriod: 20
+    chopLookbackPeriods: 15
+    chopMaxCrossings: 6
 
     rsiPeriod: 14
-    rsiMidline: 50
-    rsiOverboughtCeiling: 70
+    rsiMidline: 60
+    rsiOverboughtCeiling: 78
 
-    volumeAvgPeriod: 20
-    volumeConfirmationMultiplier: 1.5
+    volumeAvgPeriod: 15
+    volumeConfirmationMultiplier: 1.2
 
     minBuyUsd: 5000
     maxBuyPctOfLiquidity: 3
