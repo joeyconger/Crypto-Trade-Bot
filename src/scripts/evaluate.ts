@@ -1,26 +1,33 @@
 /**
- * Manual smoke-test for the technical + on-chain signal pipeline. Run this
- * wherever the process has real network access (e.g. on Railway) to sanity-check
- * live Birdeye/Helius responses -- `npm run evaluate`. Does not touch signal_log;
- * the full poll loop that persists evaluations lands with the scoring engine.
+ * Manual smoke-test for the full signal pipeline (technical + on-chain + social
+ * -> combined score -> signal_log). Run this wherever the process has real
+ * network access (e.g. Railway) to sanity-check live Birdeye/Helius responses
+ * -- `npm run evaluate`. The continuous poll loop that also executes trades
+ * lands with the paper-trading execution engine.
  */
 import { loadWatchlistConfig } from "../config/watchlist.js";
-import { evaluateTechnicalSignal } from "../signals/technical.js";
-import { evaluateOnchainSignal } from "../signals/onchain.js";
+import { getDb, syncWatchlistTokens } from "../db/index.js";
+import { evaluateToken, logSignalEvaluation } from "../engine/scoring.js";
 
 async function main() {
   const config = loadWatchlistConfig();
+  getDb();
+  syncWatchlistTokens(config);
+
   const tokens = config.tokens.filter((t) => t.enabled);
 
   for (const token of tokens) {
     console.log(`\n=== ${token.symbol} (${token.address}) ===`);
 
     try {
-      const technical = await evaluateTechnicalSignal(token);
-      console.log(`technical: score=${technical.score.toFixed(2)} -- ${technical.detail}`);
+      const result = await evaluateToken(token);
+      console.log(`  technical: score=${result.technical.score.toFixed(2)} -- ${result.technical.detail}`);
+      console.log(`  onchain:   score=${result.onchain.score.toFixed(2)} -- ${result.onchain.detail}`);
+      console.log(`  social:    score=${result.social.score.toFixed(2)} -- ${result.social.detail}`);
+      console.log(`  combined:  score=${result.combinedScore.toFixed(2)} -> action=${result.action}`);
 
-      const onchain = await evaluateOnchainSignal(token, technical.candles);
-      console.log(`onchain:   score=${onchain.score.toFixed(2)} -- ${onchain.detail}`);
+      const logId = logSignalEvaluation(result);
+      console.log(`  logged to signal_log as id=${logId}`);
     } catch (err) {
       console.error(`  failed to evaluate ${token.symbol}:`, err instanceof Error ? err.message : err);
     }

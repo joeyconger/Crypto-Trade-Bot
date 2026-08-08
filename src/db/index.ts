@@ -98,3 +98,38 @@ export function getRecentOnchainSnapshots(tokenAddress: string, limit = 10): Onc
     )
     .all(tokenAddress, limit) as OnchainSnapshotRow[];
 }
+
+export interface SignalLogInput {
+  tokenAddress: string;
+  tokenSymbol: string;
+  technicalScore: number;
+  onchainScore: number;
+  socialScore: number;
+  combinedScore: number;
+  technicalDetail: string;
+  onchainDetail: string;
+  socialDetail: string;
+  actionTaken: "none" | "buy" | "sell";
+  tradeId?: number;
+}
+
+/** Inserts one signal_log row and returns its id, for later linking to a trade. */
+export function insertSignalLog(input: SignalLogInput): number {
+  const result = getDb()
+    .prepare(
+      `INSERT INTO signal_log (
+        token_address, token_symbol, technical_score, onchain_score, social_score,
+        combined_score, technical_detail, onchain_detail, social_detail, action_taken, trade_id
+      ) VALUES (
+        @tokenAddress, @tokenSymbol, @technicalScore, @onchainScore, @socialScore,
+        @combinedScore, @technicalDetail, @onchainDetail, @socialDetail, @actionTaken, @tradeId
+      )`,
+    )
+    .run({ ...input, tradeId: input.tradeId ?? null });
+
+  return Number(result.lastInsertRowid);
+}
+
+export function attachTradeToSignalLog(signalLogId: number, tradeId: number): void {
+  getDb().prepare(`UPDATE signal_log SET trade_id = ? WHERE id = ?`).run(tradeId, signalLogId);
+}

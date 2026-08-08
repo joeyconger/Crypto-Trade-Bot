@@ -20,13 +20,16 @@ tokens:
     # Twitter accounts (handles, no @) whose tweets mentioning this token's
     # symbol/name feed the social signal. Shared list can also be set globally
     # in twitterAccounts below; per-token list is additive.
+    # NOTE: social signal is disabled in v1 (see README) -- always scores 0.
+    # weights.social is 0 below so it doesn't drag the combined score toward
+    # zero; bump it back up once Twitter/X integration is wired in.
     twitterKeywords: [BONK, "$BONK"]
 
     # --- signal weights (must sum to 1.0 across the three signals) ---
     weights:
-      technical: 0.5
-      onchain: 0.35
-      social: 0.15
+      technical: 0.6
+      onchain: 0.4
+      social: 0
 
     # --- combined score thresholds, range [-1, 1] ---
     buyThreshold: 0.6
@@ -51,9 +54,9 @@ tokens:
     twitterKeywords: [WIF, "$WIF", dogwifhat]
 
     weights:
-      technical: 0.5
-      onchain: 0.35
-      social: 0.15
+      technical: 0.6
+      onchain: 0.4
+      social: 0
 
     buyThreshold: 0.6
     sellThreshold: -0.6
