@@ -22,6 +22,12 @@ const envSchema = z.object({
   WATCHLIST_CONFIG_PATH: z.string().default("./config/watchlist.yaml"),
 
   DASHBOARD_PORT: z.coerce.number().int().positive().default(4000),
+
+  // Virtual bankroll paper mode sizes positions against. Position sizing is a
+  // fixed % of this starting balance (not compounding equity) -- simple and
+  // predictable for v1.
+  PAPER_STARTING_BALANCE_USD: z.coerce.number().positive().default(1000),
+  POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(300),
 });
 
 export type Env = z.infer<typeof envSchema> & {
