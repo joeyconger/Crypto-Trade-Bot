@@ -2,6 +2,7 @@ import { env } from "./config/env.js";
 import { loadWatchlistConfig } from "./config/watchlist.js";
 import { getDb, syncWatchlistTokens } from "./db/index.js";
 import { startPollLoop } from "./engine/loop.js";
+import { startDashboardServer } from "./dashboard/server.js";
 
 function main() {
   const config = loadWatchlistConfig();
@@ -30,6 +31,7 @@ function main() {
   console.log(`  risk: max ${config.risk.maxConcurrentPositions} concurrent, ${config.risk.dailyLossLimitPct}% daily loss limit`);
   console.log(`  poll interval: ${env.POLL_INTERVAL_SECONDS}s\n`);
 
+  startDashboardServer();
   startPollLoop(env.POLL_INTERVAL_SECONDS);
 }
 

@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vibes &amp; Fibs</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --surface-0: #0d0d0d;
+    --surface-1: #1a1a19;
+    --surface-2: #232322;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --border: rgba(255, 255, 255, 0.10);
+    --gridline: #2c2c2a;
+    --accent: #3987e5;
+    --accent-soft: rgba(57, 135, 229, 0.14);
+    --good: #0ca30c;
+    --good-soft: rgba(12, 163, 12, 0.14);
+    --critical: #e66767;
+    --critical-soft: rgba(230, 103, 103, 0.14);
+    --warning: #c98500;
+    --track: #2c2c2a;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --surface-0: #f9f9f7;
+      --surface-1: #fcfcfb;
+      --surface-2: #f2f1ee;
+      --text-primary: #0b0b0b;
+      --text-secondary: #52514e;
+      --text-muted: #898781;
+      --border: rgba(11, 11, 11, 0.10);
+      --gridline: #e1e0d9;
+      --accent: #2a78d6;
+      --accent-soft: rgba(42, 120, 214, 0.10);
+      --good: #006300;
+      --good-soft: rgba(0, 99, 0, 0.10);
+      --critical: #d03b3b;
+      --critical-soft: rgba(208, 59, 59, 0.10);
+      --warning: #eda100;
+      --track: #e1e0d9;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 28px 20px 64px;
+  }
+
+  header.top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .brand svg { flex-shrink: 0; }
+
+  .brand h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+
+  .brand p {
+    margin: 2px 0 0;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+
+  .top-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 11px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    border: 1px solid var(--border);
+  }
+
+  .badge.paper { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+  .badge.live { color: var(--critical); background: var(--critical-soft); border-color: transparent; }
+  .badge.paused { color: var(--warning); background: rgba(201, 133, 0, 0.14); border-color: transparent; }
+  .badge.running { color: var(--good); background: var(--good-soft); border-color: transparent; }
+
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+  button.toggle {
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 8px 16px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface-1);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+
+  button.toggle:hover { background: var(--surface-2); border-color: var(--accent); }
+  button.toggle:disabled { opacity: 0.5; cursor: default; }
+
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin-bottom: 28px;
+  }
+
+  @media (max-width: 860px) {
+    .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px 20px;
+  }
+
+  .kpi .label {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+  }
+
+  .kpi .value {
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .kpi .sub {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .up { color: var(--good); }
+  .down { color: var(--critical); }
+
+  .meter-track {
+    margin-top: 10px;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--track);
+    overflow: hidden;
+  }
+
+  .meter-track .fill {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--accent);
+    transition: width 0.3s ease;
+  }
+
+  .meter-track .fill.warn { background: var(--warning); }
+  .meter-track .fill.danger { background: var(--critical); }
+
+  section.panel {
+    margin-bottom: 24px;
+  }
+
+  section.panel h2 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  section.panel h2 .count {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted);
+  }
+
+  .table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface-1);
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    min-width: 640px;
+  }
+
+  thead th {
+    text-align: left;
+    font-weight: 500;
+    color: var(--text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--gridline);
+    white-space: nowrap;
+  }
+
+  tbody td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--gridline);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface-2); }
+
+  td.reason {
+    white-space: normal;
+    max-width: 320px;
+    color: var(--text-secondary);
+    font-variant-numeric: normal;
+  }
+
+  .sym {
+    font-weight: 600;
+  }
+
+  .action-pill {
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .action-pill.buy { color: var(--good); background: var(--good-soft); }
+  .action-pill.sell { color: var(--critical); background: var(--critical-soft); }
+  .action-pill.none { color: var(--text-muted); background: var(--surface-2); }
+
+  .score-meter {
+    position: relative;
+    width: 64px;
+    height: 6px;
+    background: var(--track);
+    border-radius: 3px;
+  }
+
+  .score-meter::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: -2px;
+    bottom: -2px;
+    width: 1px;
+    background: var(--border);
+  }
+
+  .score-meter .fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-radius: 3px;
+  }
+
+  .score-cell {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .score-num {
+    width: 34px;
+    text-align: right;
+    color: var(--text-secondary);
+  }
+
+  .empty {
+    padding: 32px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  footer {
+    margin-top: 32px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <svg width="34" height="34" viewBox="0 0 34 34" fill="none">
+        <circle cx="17" cy="17" r="16" stroke="#3987e5" stroke-width="1.5" opacity="0.35"/>
+        <path d="M17 3 A14 14 0 0 1 31 17 A9 9 0 0 1 22 26 A5.5 5.5 0 0 1 16.5 20.5 A3.2 3.2 0 0 1 19.7 17.3"
+              stroke="#3987e5" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+      </svg>
+      <div>
+        <h1>Vibes &amp; Fibs</h1>
+        <p>Solana signal bot &mdash; technical + on-chain</p>
+      </div>
+    </div>
+    <div class="top-right">
+      <span id="modeBadge" class="badge paper"><span class="dot"></span>paper</span>
+      <span id="stateBadge" class="badge running"><span class="dot"></span>running</span>
+      <button id="toggleBtn" class="toggle">Pause</button>
+    </div>
+  </header>
+
+  <div class="kpi-grid">
+    <div class="card kpi">
+      <div class="label">Paper balance</div>
+      <div class="value" id="kpiBalance">&mdash;</div>
+      <div class="sub" id="kpiBalanceSub">&nbsp;</div>
+    </div>
+    <div class="card kpi">
+      <div class="label">All-time P&amp;L</div>
+      <div class="value" id="kpiAllTime">&mdash;</div>
+      <div class="sub">realized, closed trades</div>
+    </div>
+    <div class="card kpi">
+      <div class="label">Today's P&amp;L</div>
+      <div class="value" id="kpiToday">&mdash;</div>
+      <div class="meter-track"><div class="fill" id="kpiTodayMeter" style="width:0%"></div></div>
+    </div>
+    <div class="card kpi">
+      <div class="label">Open positions</div>
+      <div class="value" id="kpiPositions">&mdash;</div>
+      <div class="meter-track"><div class="fill" id="kpiPositionsMeter" style="width:0%"></div></div>
+    </div>
+  </div>
+
+  <section class="panel">
+    <h2>Open positions <span class="count" id="positionsCount"></span></h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Token</th><th>Entry</th><th>Current</th><th>Qty</th><th>Size</th>
+            <th>Unrealized P&amp;L</th><th>Stop / Take</th><th>Opened</th><th class="reason">Reason</th>
+          </tr>
+        </thead>
+        <tbody id="positionsBody"></tbody>
+      </table>
+      <div class="empty" id="positionsEmpty" style="display:none">No open positions</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Trade history <span class="count" id="tradesCount"></span></h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Token</th><th>Entry</th><th>Exit</th><th>Size</th><th>P&amp;L</th>
+            <th>Opened</th><th>Closed</th><th class="reason">Reason</th>
+          </tr>
+        </thead>
+        <tbody id="tradesBody"></tbody>
+      </table>
+      <div class="empty" id="tradesEmpty" style="display:none">No closed trades yet</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Signal history <span class="count" id="signalsCount"></span></h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th><th>Token</th><th>Technical</th><th>On-chain</th><th>Social</th>
+            <th>Combined</th><th>Action</th><th class="reason">Detail</th>
+          </tr>
+        </thead>
+        <tbody id="signalsBody"></tbody>
+      </table>
+      <div class="empty" id="signalsEmpty" style="display:none">No signal evaluations logged yet</div>
+    </div>
+  </section>
+
+  <footer>Refreshes every 15s &middot; paper trading only unless LIVE_TRADING is explicitly enabled</footer>
+</div>
+
+<script>
+  const fmtUsd = (n) => n == null ? "&mdash;" : (n < 0 ? "-$" : "$") + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtPct = (n) => n == null ? "&mdash;" : (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
+  const fmtQty = (n) => n == null ? "&mdash;" : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const fmtPrice = (n) => {
+    if (n == null) return "&mdash;";
+    if (n === 0) return "0";
+    const abs = Math.abs(n);
+    const decimals = abs < 0.0001 ? 8 : abs < 1 ? 6 : abs < 100 ? 4 : 2;
+    return n.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  };
+  const fmtTime = (iso) => {
+    if (!iso) return "&mdash;";
+    const d = new Date(iso.endsWith("Z") ? iso : iso + "Z");
+    return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  };
+  const esc = (s) => (s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  function scoreMeter(score) {
+    if (score == null) return '<div class="score-cell"><div class="score-meter"></div><span class="score-num">&mdash;</span></div>';
+    const pct = Math.min(Math.abs(score), 1) * 50;
+    const style = score >= 0
+      ? `left:50%;width:${pct}%;background:var(--good)`
+      : `right:50%;width:${pct}%;background:var(--critical)`;
+    return `<div class="score-cell"><div class="score-meter"><div class="fill" style="${style}"></div></div><span class="score-num">${score.toFixed(2)}</span></div>`;
+  }
+
+  function pnlSpan(usd, pct) {
+    if (usd == null) return '<span>&mdash;</span>';
+    const cls = usd >= 0 ? "up" : "down";
+    const pctStr = pct != null ? ` (${fmtPct(pct)})` : "";
+    return `<span class="${cls}">${fmtUsd(usd)}${pctStr}</span>`;
+  }
+
+  async function fetchJson(url, opts) {
+    const res = await fetch(url, opts);
+    if (!res.ok) throw new Error(url + " -> " + res.status);
+    return res.json();
+  }
+
+  async function refreshStatus() {
+    const s = await fetchJson("/api/status");
+
+    const modeBadge = document.getElementById("modeBadge");
+    modeBadge.className = "badge " + (s.mode === "live" ? "live" : "paper");
+    modeBadge.innerHTML = `<span class="dot"></span>${s.mode}`;
+
+    const stateBadge = document.getElementById("stateBadge");
+    stateBadge.className = "badge " + (s.paused ? "paused" : "running");
+    stateBadge.innerHTML = `<span class="dot"></span>${s.paused ? "paused" : "running"}`;
+
+    const btn = document.getElementById("toggleBtn");
+    btn.textContent = s.paused ? "Resume" : "Pause";
+    btn.onclick = async () => {
+      btn.disabled = true;
+      await fetchJson(s.paused ? "/api/resume" : "/api/pause", { method: "POST" });
+      btn.disabled = false;
+      refreshStatus();
+    };
+
+    document.getElementById("kpiBalance").textContent = fmtUsd(s.equity.currentBalanceUsd).replace("&mdash;", "-");
+    document.getElementById("kpiBalanceSub").textContent = `of $${s.equity.startingBalanceUsd.toLocaleString()} starting`;
+
+    const allTime = document.getElementById("kpiAllTime");
+    allTime.textContent = fmtUsd(s.equity.realizedPnlAllTimeUsd);
+    allTime.className = "value " + (s.equity.realizedPnlAllTimeUsd >= 0 ? "up" : "down");
+
+    const today = document.getElementById("kpiToday");
+    today.textContent = fmtUsd(s.risk.realizedPnlTodayUsd);
+    today.className = "value " + (s.risk.realizedPnlTodayUsd >= 0 ? "up" : "down");
+    const todayPct = Math.min(Math.abs(s.risk.realizedPnlTodayUsd) / s.risk.dailyLossLimitUsd * 100, 100);
+    const todayFill = document.getElementById("kpiTodayMeter");
+    todayFill.style.width = todayPct + "%";
+    todayFill.className = "fill " + (s.risk.haltedForDailyLoss ? "danger" : s.risk.realizedPnlTodayUsd < 0 && todayPct > 60 ? "warn" : "");
+
+    document.getElementById("kpiPositions").textContent = `${s.risk.openPositionsCount} / ${s.risk.maxConcurrentPositions}`;
+    const posPct = Math.min(s.risk.openPositionsCount / s.risk.maxConcurrentPositions * 100, 100);
+    document.getElementById("kpiPositionsMeter").style.width = posPct + "%";
+  }
+
+  async function refreshPositions() {
+    const rows = await fetchJson("/api/positions");
+    document.getElementById("positionsCount").textContent = rows.length ? `(${rows.length})` : "";
+    document.getElementById("positionsEmpty").style.display = rows.length ? "none" : "block";
+    document.getElementById("positionsBody").innerHTML = rows.map((t) => `
+      <tr>
+        <td class="sym">${esc(t.token_symbol)}</td>
+        <td>${fmtPrice(t.entry_price)}</td>
+        <td>${fmtPrice(t.currentPrice)}</td>
+        <td>${fmtQty(t.quantity)}</td>
+        <td>${fmtUsd(t.usd_size)}</td>
+        <td>${pnlSpan(t.unrealizedPnlUsd, t.unrealizedPnlPct)}</td>
+        <td>${fmtPrice(t.stop_loss_price)} / ${fmtPrice(t.take_profit_price)}</td>
+        <td>${fmtTime(t.opened_at)}</td>
+        <td class="reason">${esc(t.reason)}</td>
+      </tr>
+    `).join("");
+  }
+
+  async function refreshTrades() {
+    const rows = await fetchJson("/api/trades?limit=50");
+    document.getElementById("tradesCount").textContent = rows.length ? `(${rows.length})` : "";
+    document.getElementById("tradesEmpty").style.display = rows.length ? "none" : "block";
+    document.getElementById("tradesBody").innerHTML = rows.map((t) => `
+      <tr>
+        <td class="sym">${esc(t.token_symbol)}</td>
+        <td>${fmtPrice(t.entry_price)}</td>
+        <td>${fmtPrice(t.exit_price)}</td>
+        <td>${fmtUsd(t.usd_size)}</td>
+        <td>${pnlSpan(t.pnl_usd, t.pnl_pct)}</td>
+        <td>${fmtTime(t.opened_at)}</td>
+        <td>${fmtTime(t.closed_at)}</td>
+        <td class="reason">${esc(t.reason)}</td>
+      </tr>
+    `).join("");
+  }
+
+  async function refreshSignals() {
+    const rows = await fetchJson("/api/signals?limit=100");
+    document.getElementById("signalsCount").textContent = rows.length ? `(${rows.length})` : "";
+    document.getElementById("signalsEmpty").style.display = rows.length ? "none" : "block";
+    document.getElementById("signalsBody").innerHTML = rows.map((s) => {
+      let detail = "";
+      try { detail = JSON.parse(s.technical_detail || "{}").detail || ""; } catch {}
+      return `
+      <tr>
+        <td>${fmtTime(s.evaluated_at)}</td>
+        <td class="sym">${esc(s.token_symbol)}</td>
+        <td>${scoreMeter(s.technical_score)}</td>
+        <td>${scoreMeter(s.onchain_score)}</td>
+        <td>${scoreMeter(s.social_score)}</td>
+        <td>${scoreMeter(s.combined_score)}</td>
+        <td><span class="action-pill ${s.action_taken}">${s.action_taken}</span></td>
+        <td class="reason">${esc(detail)}</td>
+      </tr>
+    `;
+    }).join("");
+  }
+
+  async function refreshAll() {
+    try {
+      await Promise.all([refreshStatus(), refreshPositions(), refreshTrades(), refreshSignals()]);
+    } catch (err) {
+      console.error("dashboard refresh failed", err);
+    }
+  }
+
+  refreshAll();
+  setInterval(refreshAll, 15000);
+</script>
+</body>
+</html>

@@ -80,3 +80,14 @@ CREATE TABLE IF NOT EXISTS signal_log (
 
 CREATE INDEX IF NOT EXISTS idx_signal_log_token ON signal_log (token_address);
 CREATE INDEX IF NOT EXISTS idx_signal_log_evaluated_at ON signal_log (evaluated_at);
+
+-- Single-row runtime state. Dashboard-controlled pause is separate from the
+-- LIVE_TRADING env gate: pausing halts the poll loop from acting without
+-- touching the paper/live safety gate, which stays env-only by design.
+CREATE TABLE IF NOT EXISTS bot_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  paused INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+INSERT OR IGNORE INTO bot_state (id, paused) VALUES (1, 0);

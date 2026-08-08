@@ -1,5 +1,5 @@
 import { loadWatchlistConfig } from "../config/watchlist.js";
-import { syncWatchlistTokens } from "../db/index.js";
+import { syncWatchlistTokens, getBotState } from "../db/index.js";
 import { evaluateToken, logSignalEvaluation } from "./scoring.js";
 import { getRiskState, canOpenPosition, computePositionSizeUsd } from "../execution/risk.js";
 import { getOpenTrade, openPaperPosition, closePaperPosition } from "../execution/paperTrading.js";
@@ -56,6 +56,11 @@ async function evaluateAndActOnToken(token: TokenConfig, config: WatchlistConfig
 }
 
 export async function runPollCycle(): Promise<void> {
+  if (getBotState().paused) {
+    console.log("Bot is paused (via dashboard) -- skipping poll cycle");
+    return;
+  }
+
   const config = loadWatchlistConfig();
   syncWatchlistTokens(config);
 

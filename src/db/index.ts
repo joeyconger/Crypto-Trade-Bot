@@ -133,3 +133,72 @@ export function insertSignalLog(input: SignalLogInput): number {
 export function attachTradeToSignalLog(signalLogId: number, tradeId: number): void {
   getDb().prepare(`UPDATE signal_log SET trade_id = ? WHERE id = ?`).run(tradeId, signalLogId);
 }
+
+export interface TradeRow {
+  id: number;
+  token_address: string;
+  token_symbol: string;
+  mode: "paper" | "live";
+  side: "buy" | "sell";
+  status: "open" | "closed";
+  entry_price: number;
+  exit_price: number | null;
+  quantity: number;
+  usd_size: number;
+  stop_loss_price: number | null;
+  take_profit_price: number | null;
+  reason: string | null;
+  tx_signature: string | null;
+  pnl_usd: number | null;
+  pnl_pct: number | null;
+  opened_at: string;
+  closed_at: string | null;
+}
+
+export function getOpenTrades(): TradeRow[] {
+  return getDb().prepare(`SELECT * FROM trades WHERE status = 'open' ORDER BY opened_at DESC`).all() as TradeRow[];
+}
+
+export function getClosedTrades(limit = 50): TradeRow[] {
+  return getDb()
+    .prepare(`SELECT * FROM trades WHERE status = 'closed' ORDER BY closed_at DESC LIMIT ?`)
+    .all(limit) as TradeRow[];
+}
+
+export function getRealizedPnlAllTime(): number {
+  const row = getDb()
+    .prepare(`SELECT COALESCE(SUM(pnl_usd), 0) as total FROM trades WHERE status = 'closed'`)
+    .get() as { total: number };
+  return row.total;
+}
+
+export interface SignalLogRow {
+  id: number;
+  token_address: string;
+  token_symbol: string;
+  evaluated_at: string;
+  technical_score: number | null;
+  onchain_score: number | null;
+  social_score: number | null;
+  combined_score: number | null;
+  technical_detail: string | null;
+  onchain_detail: string | null;
+  social_detail: string | null;
+  action_taken: "none" | "buy" | "sell";
+  trade_id: number | null;
+}
+
+export function getSignalLog(limit = 100): SignalLogRow[] {
+  return getDb().prepare(`SELECT * FROM signal_log ORDER BY evaluated_at DESC LIMIT ?`).all(limit) as SignalLogRow[];
+}
+
+export function getBotState(): { paused: boolean } {
+  const row = getDb().prepare(`SELECT paused FROM bot_state WHERE id = 1`).get() as { paused: number } | undefined;
+  return { paused: !!row?.paused };
+}
+
+export function setPaused(paused: boolean): void {
+  getDb()
+    .prepare(`UPDATE bot_state SET paused = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = 1`)
+    .run(paused ? 1 : 0);
+}
