@@ -1,11 +1,84 @@
 # Vibes & Fibs
 
-An autonomous Solana trading bot that combines a technical signal (fibonacci
-retracement + support/resistance confluence), an on-chain signal (whale moves,
-volume/liquidity spikes), and a social signal (currently disabled -- see
-[Social signal](#social-signal-disabled-in-v1) below) into one weighted score
-per watchlist token, then acts on it. Ships in **paper trading mode by
-default** -- live trading is an explicit, double-gated opt-in.
+An autonomous Solana trading bot with a strict, structure-based strategy: an
+**on-chain wallet-confirmation trigger** is the only thing that can fire a
+trade, a **fib retracement filter** narrows the timing after that, and exits
+are managed with ATR-based stops and a scaled, structure-trailing take-profit.
+Ships in **paper trading mode by default** -- live trading is an explicit,
+double-gated opt-in.
+
+## Strategy
+
+### Entry (all conditions required)
+
+**The on-chain trigger is the only signal that can fire a trade.** A wallet
+buy is a *candidate* only if:
+- Buy size >= `minBuyUsd` **and** <= `maxBuyPctOfLiquidity`% of pool
+  liquidity (bigger isn't more conviction, it's manipulation risk)
+- Wallet >= `minWalletAgeDays` old with >= `minWalletPriorTrades` prior
+  transactions
+- Wallet isn't tagged exchange/bridge/market-maker (`config/known-wallets.yaml`)
+- Wallet's last 5 observed buys didn't dump (sell the same token) within 24h
+  -- a local reputation score that starts neutral and updates as the bot
+  observes more, built entirely from what it's seen on your watchlist
+
+A trade only fires once **>= `minConfirmingWallets`** separate,
+mutually-unconnected candidates buy within `confirmationWindowHours`. One
+wallet alone, however well it qualifies, never triggers anything.
+
+**The fib filter only narrows timing after the trigger fires -- it never
+triggers a trade by itself.** Current price must sit within
+`goldenPocketZonePct`% of the 0.5 or 0.618 retracement off the most recent
+*confirmed* swing (a pivot needs `fibPivotWindow` candles flanking it on both
+sides before it counts -- not still-forming price action). A confirmed
+downtrend is a hard no: this is a long-only bot, so it doesn't chase bounces.
+
+### Position sizing
+
+Risk-based, not a flat dollar amount: `size = (account x riskPctPerTrade) /
+(entry - stop)`, hard-capped at `maxPositionSizePct` of the account regardless
+of stop distance. No cap on concurrent open positions.
+
+### Stop loss
+
+`swing low - (stopAtrMultiplier x ATR(atrPeriod))`, using Wilder's smoothing
+(not a plain moving average) recalculated fresh every cycle -- volatility
+regimes shift fast, a static ATR value goes stale.
+
+### Take profit -- scaled, runner uncapped
+
+- `scaleOutPct1`% closed at the `extensionRatio1` (1.272) fib extension
+- `scaleOutPct2`% closed at the `extensionRatio2` (1.618) fib extension
+- The remainder rides with no fixed target: once 1.618 clears, the stop moves
+  to breakeven, then trails below each new confirmed higher pivot low as
+  price makes new highs -- structure-based, not a fixed percent. It stays
+  open as long as trend structure holds.
+
+### Time exit
+
+Applies only to the unscaled portion: if `timeExitHours` passes without
+hitting the stop or the first scale-out target, the whole position closes.
+Once the first scale-out has fired, the clock no longer matters -- the
+trade's proven itself and the runner is never time-limited.
+
+### Signal reversal override
+
+If any of *this trade's own confirming wallets* sells the token, that's an
+immediate full close, regardless of where price sits relative to stop/targets.
+
+### Account-level circuit breakers
+
+- **Daily**: `dailyLossLimitPct`% drawdown halts new entries for the rest of
+  the UTC day (existing positions keep being managed for exit) -- clears
+  itself automatically at midnight UTC, no persisted state needed.
+- **Weekly**: `weeklyLossLimitPct`% drawdown (trailing 7 days) halts entirely
+  and stays halted until a human resumes it from the dashboard.
+- **Consecutive losses**: `consecutiveLossLimit` losses in a row halts
+  entirely, same sticky no-auto-resume behavior.
+
+A halt only blocks *new* entries -- abandoning risk management on positions
+already open, just because new risk is paused, would be the wrong kind of
+"safety."
 
 ## Architecture at a glance
 
@@ -17,34 +90,34 @@ default** -- live trading is an explicit, double-gated opt-in.
   runtime -- the bot signs and sends its own transactions via
   [`@solana/web3.js`](https://github.com/anza-xyz/solana-web3.js) and the
   [Jupiter Swap API](https://dev.jup.ag/docs/swap-api/).
-- **Data**: [Helius](https://helius.dev) for RPC + whale wallet transaction
-  monitoring, [Birdeye](https://birdeye.so) for OHLCV price candles and
-  liquidity/volume data. See [Why Helius *and* Birdeye](#why-helius-and-birdeye)
-  below.
-- **Storage**: SQLite via `better-sqlite3` (`data/bot.sqlite`, gitignored) --
-  watchlist registry, trade history, and a full signal-evaluation audit log
-  (every cycle, whether or not it traded).
+- **Data**: [Helius](https://helius.dev) for RPC + wallet activity/reputation,
+  [Birdeye](https://birdeye.so) for OHLCV price candles and liquidity. See
+  [Why Helius *and* Birdeye](#why-helius-and-birdeye) below.
+- **Storage**: SQLite via `better-sqlite3` (`data/bot.sqlite`, gitignored).
 - **Dashboard**: a single Express service serves both the poll loop and a
   web dashboard (`src/dashboard/`) on one process -- one Railway deployment.
 
 ```
-config/watchlist.yaml  -- tokens + per-token strategy params (edit freely, no code changes)
+config/watchlist.yaml       -- tokens + per-token strategy params (edit freely, no code changes)
+config/known-wallets.yaml   -- exchange/bridge/market-maker denylist (user-maintained, ships empty)
         |
         v
-src/engine/loop.ts      -- polls on an interval, evaluates every enabled token
+src/engine/loop.ts           -- polls on an interval, per enabled token:
         |
-        +--> src/signals/technical.ts  (Birdeye OHLCV -> fib levels -> score)
-        +--> src/signals/onchain.ts    (Helius whale txs + Birdeye volume/liquidity -> score)
-        +--> src/signals/social.ts     (stub, always 0 -- see below)
+        +--> src/onchain/walletActivity.ts    (records every observed buy/sell)
+        +--> src/onchain/entryTrigger.ts      (candidates -> independent confirmation)
+        |      +--> src/onchain/walletReputation.ts  (age/tag/local reputation)
+        |      +--> src/onchain/walletConnectivity.ts (heuristic: are two wallets connected?)
+        +--> src/signals/fib.ts               (confirmed swing -> golden pocket check)
+        +--> src/signals/atr.ts               (ATR(14), Wilder's smoothing)
         |
         v
-src/engine/scoring.ts   -- weights the three into combined_score, logs every
-        |                  evaluation to signal_log regardless of outcome
-        v
-src/execution/risk.ts   -- position size cap, max concurrent, daily loss halt
+src/execution/positionSizing.ts   -- risk-based size, ATR stop
+src/execution/circuitBreakers.ts  -- daily/weekly/consecutive-loss halts
+src/execution/exitManager.ts      -- signal reversal, stop, scale-outs, trailing, time exit (pure decision)
         |
-        +--> paper mode: src/execution/paperTrading.ts  (simulated fill)
-        +--> live mode:  src/execution/liveTrading.ts   (real Jupiter swap)
+        +--> paper mode: src/execution/paperTrading.ts  (simulated fills)
+        +--> live mode:  src/execution/liveTrading.ts   (real Jupiter swaps, incl. partial scale-outs)
 ```
 
 ## Setup
@@ -59,60 +132,46 @@ npm start              # runs the poll loop + dashboard together
 
 The dashboard is served on `DASHBOARD_PORT` (default `4000`; Railway's
 injected `PORT` takes priority automatically). Open it in a browser to see
-open positions, trade history, and the full signal log.
+open positions (with live scale-out progress), trade history, and the full
+signal log.
 
 ## Required API keys / env vars
 
-Ask for each of these as you set the project up -- nothing runs against a
-silently-stubbed data source.
-
 | Var | Required for | Where to get it |
 |---|---|---|
-| `HELIUS_API_KEY` | RPC (also doubles as the default `SOLANA_RPC_URL` if you don't set one explicitly) + whale-move detection | [helius.dev](https://helius.dev) -- free tier is enough for one bot |
-| `BIRDEYE_API_KEY` | OHLCV candles (fib calc), volume/liquidity data | [birdeye.so/find-more](https://birdeye.so/find-more) -- free Standard tier |
+| `HELIUS_API_KEY` | RPC (also doubles as the default `SOLANA_RPC_URL`) + wallet activity/reputation lookups | [helius.dev](https://helius.dev) -- free tier is enough for one bot |
+| `BIRDEYE_API_KEY` | OHLCV candles (fib/ATR), liquidity data | [birdeye.so/find-more](https://birdeye.so/find-more) -- free Standard tier |
 | `BOT_PRIVATE_KEY` | Live trading only | Run `npm run generate-keypair` yourself -- see [Live trading](#flipping-paper--live) |
-| `TWITTER_BEARER_TOKEN` | Social signal | Not currently used -- see [Social signal](#social-signal-disabled-in-v1) |
 
 Everything else in `.env.example` has a sane default (poll interval, paper
 starting balance, dashboard port, DB path, watchlist config path).
 
 ### Why Helius *and* Birdeye
 
-They're not interchangeable -- each is genuinely better at a different half
-of the job:
-
-- **Birdeye** is the natural fit for OHLCV candles (fib calculation) and
-  volume/liquidity data -- that's its core product, and the free tier covers
-  it directly with no derivation needed.
-- **Helius** is the better fit for whale-move detection (its Enhanced
-  Transactions API returns already-decoded swap data for a given address --
-  including a token mint, which is how whale monitoring works here: polling
-  transaction history *on the token itself*) and is needed regardless as the
-  RPC endpoint for submitting live swap transactions -- meaningfully more
-  reliable than the public `api.mainnet-beta.solana.com` endpoint.
+- **Birdeye** is the natural fit for OHLCV candles (fib/ATR) and liquidity
+  data -- that's its core product, free tier covers it directly.
+- **Helius** is the better fit for wallet activity (its Enhanced Transactions
+  API returns already-decoded swap data for any address -- a token mint's
+  history for confirmation candidates, or a wallet's own history for age/tag
+  checks) and is needed regardless as the RPC endpoint for live swaps.
 
 If you only set `HELIUS_API_KEY` and leave `SOLANA_RPC_URL` at its default,
 the bot automatically uses Helius's RPC instead of the public one.
 
-### Social signal (disabled in v1)
+### Known limitations in the on-chain trigger (flagged, not hidden)
 
-Polling a fixed Twitter/X watchlist for sentiment was part of the original
-plan, but X's API pricing makes it a real tradeoff: the **Free** tier can't
-read tweets/timelines at all (post + auth only), so a bot that actually polls
-accounts needs the **Basic tier at $200/month**. The scraping alternative is
-free but fragile -- X actively blocks scrapers, most scraping libraries broke
-when X locked down guest tokens, and an authenticated-session approach risks
-your logged-in account getting flagged, on top of being a Terms of Service
-gray area.
-
-Given that, v1 ships with the social signal stubbed to a neutral `0`
-(`src/signals/social.ts`) and `weights.social: 0` in the example watchlist
-config, so it doesn't silently drag every combined score toward zero. The
-three-signal interface (`evaluateToken` in `src/engine/scoring.ts`) is
-already built to take a real social signal as a drop-in replacement --
-wiring in the X API Basic tier later doesn't require touching the scoring
-engine, just swapping the stub for a real implementation and rebalancing
-`weights` in `config/watchlist.yaml`.
+- **`config/known-wallets.yaml` ships empty.** There's no reliable free API
+  that labels Solana wallets as exchange/bridge/market-maker, and hot wallets
+  rotate over time -- a wrong guessed address would give false confidence in
+  a safety-relevant filter, which is worse than no list at all. Populate it
+  yourself from a source you trust (Solscan's labels, your own observation).
+- **Wallet "connectedness" is a direct-transaction heuristic**, not a full
+  funding-graph walk: it catches one wallet directly funding another's gas or
+  sending it tokens, not a laundered multi-hop relationship. True graph
+  analysis needs far more API budget than a free tier supports.
+- **Wallet age is a bounded history lookup**, not a real creation timestamp
+  (Solana accounts don't have one) -- a proxy that's accurate enough for a
+  ">= N days" filter but isn't exact for very old, very active wallets.
 
 ## Configuring the watchlist
 
@@ -124,54 +183,51 @@ tokens:
   - symbol: BONK
     address: DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263
     enabled: true
-    fibLevels: [0.236, 0.382, 0.5, 0.618, 0.786]
+
+    fibPivotWindow: 5
+    goldenPocketZonePct: 1
     swingLookbackHours: 72
-    confluenceZonePct: 1.5
-    whaleUsdThreshold: 25000
-    volumeSpikeMultiplier: 3
-    weights: { technical: 0.6, onchain: 0.4, social: 0 }
-    buyThreshold: 0.6
-    sellThreshold: -0.6
-    positionSizePct: 5
-    stopLossPct: 8
-    takeProfitPct: 20
+
+    minBuyUsd: 5000
+    maxBuyPctOfLiquidity: 3
+    minWalletAgeDays: 14
+    minWalletPriorTrades: 1
+    confirmationWindowHours: 4
+    minConfirmingWallets: 2
+
+    atrPeriod: 14
+    stopAtrMultiplier: 1
+
+    extensionRatio1: 1.272
+    extensionRatio2: 1.618
+    scaleOutPct1: 33
+    scaleOutPct2: 33
+
+    timeExitHours: 48
 
 risk:
-  maxConcurrentPositions: 5
+  riskPctPerTrade: 1
   maxPositionSizePct: 10
-  dailyLossLimitPct: 10
+  dailyLossLimitPct: 3
+  weeklyLossLimitPct: 8
+  consecutiveLossLimit: 4
 ```
 
-`weights.technical + weights.onchain + weights.social` must sum to `1.0` per
-token (validated at load time). `risk` applies globally across all tokens.
-
-## Risk management
-
-Applied identically in paper and live mode, sized against the current
-bankroll (paper: `PAPER_STARTING_BALANCE_USD`; live: the bot wallet's actual
-SOL balance, priced live):
-
-- **Position size**: `min(token.positionSizePct, risk.maxPositionSizePct)` of
-  the bankroll.
-- **Max concurrent positions**: blocks new buys once `risk.maxConcurrentPositions`
-  positions are open (scoped per mode, so paper-mode testing never counts
-  against live limits or vice versa).
-- **Stop loss / take profit**: checked every poll cycle against each open
-  position's price; whichever hits first (or a sell signal, if neither has)
-  closes the position.
-- **Daily loss limit**: if realized P&L for the current UTC day drops below
-  `-risk.dailyLossLimitPct%` of the bankroll, new buys are blocked for the
-  rest of the day. Existing open positions are still managed for exit --
-  the halt only blocks *new* risk, it doesn't abandon what's already open.
+`scaleOutPct1 + scaleOutPct2` must leave a remainder for the runner, and
+`extensionRatio2` must exceed `extensionRatio1` (both validated at load
+time). `risk` applies globally across all tokens.
 
 ## Logging & visibility
 
-Every signal evaluation is written to `signal_log` -- including the ones that
-don't trigger a trade -- with the technical/on-chain/social scores, the
-combined score, a human-readable detail string per signal, and which action
-(if any) was taken. The dashboard's Signal History table is a live view of
-this table, and it's the first place to look when the bot didn't do
-something you expected: the reason is always logged, not just the trades.
+Every entry-trigger evaluation is written to `signal_log` -- including the
+ones that don't lead to a trade -- with whether the on-chain trigger fired,
+whether the fib filter passed, and a detail blob (candidates considered, skip
+reason, confirming wallets). Every trade records its confirming wallets and
+their reputation at entry (`trade_signal_wallets`), and every partial exit is
+its own row in `position_exits` (tranche, price, reason, P&L), so a closed
+trade's full lifecycle -- entry context, each scale-out, final close -- is
+reconstructable from the DB, not just a single row's summary. The dashboard's
+Signal History and per-position cards are a live view of all of this.
 
 ## Flipping paper -> live
 
@@ -198,22 +254,22 @@ To go back to paper mode, set `LIVE_TRADING=false` (or drop
 `LIVE_TRADING_CONFIRM`) and restart. Nothing about the watchlist config or
 risk settings needs to change -- the same strategy config drives both modes.
 
-**Live mode swaps against SOL**, not USDC: buys are SOL -> token, sells are
-token -> SOL, via Jupiter's free `lite-api.jup.ag` tier. Position quantity is
-read back from the bot wallet's actual on-chain token balance after each
-swap (not the swap quote's estimate), so it stays correct regardless of
-slippage.
+**Live mode swaps against SOL**, not USDC: buys are SOL -> token, scale-outs
+and the final close sell a computed fraction of the wallet's *actual*
+on-chain balance back to SOL, via Jupiter's free `lite-api.jup.ag` tier.
+Quantities are always read back from the chain (not a swap quote's estimate),
+so they stay correct regardless of slippage or partial-exit drift.
 
 ## Development
 
 ```bash
-npm run dev          # tsx watch mode
+npm run dev             # tsx watch mode
 npm run typecheck
-npm test              # node:test -- pure-logic unit tests (fib math, risk checks)
-npm run evaluate       # runs the technical+onchain+social pipeline once per
-                        # watchlist token and logs to signal_log -- useful for
-                        # sanity-checking live Birdeye/Helius responses without
-                        # waiting for a full poll cycle
+npm test                 # node:test -- pure-logic unit tests (fib/ATR math, sizing, exit decisions)
+npm run evaluate          # runs one full poll cycle immediately and exits, without
+                           # waiting for POLL_INTERVAL_SECONDS -- useful for
+                           # sanity-checking live Birdeye/Helius responses
+npm run generate-keypair  # creates the bot's own Solana keypair (run yourself, see above)
 ```
 
 ## Deployment (Railway)
