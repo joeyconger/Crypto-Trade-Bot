@@ -12,7 +12,8 @@ import {
 import { getTokenOverview, getOhlcv, pickOhlcvInterval, type OhlcvCandle } from "../data/birdeye.js";
 import { pollWalletActivity } from "../onchain/walletActivity.js";
 import { evaluateEntryTrigger } from "../onchain/entryTrigger.js";
-import { checkGoldenPocket, computeFibExtensions } from "../signals/fib.js";
+import { evaluateTechnicalTrigger } from "../signals/technicalTrigger.js";
+import { computeFibExtensions } from "../signals/fib.js";
 import { computeATR } from "../signals/atr.js";
 import { computePositionSize, computeInitialStop } from "../execution/positionSizing.js";
 import { checkCircuitBreakers, recordTradeOutcome } from "../execution/circuitBreakers.js";
@@ -78,6 +79,14 @@ async function manageOpenPosition(
   }
 }
 
+/**
+ * The technical setup (trend + fib/structural confluence + RSI + volume +
+ * confirmed close) is the entry gate on its own -- it doesn't need a big
+ * wallet to also be buying. On-chain wallet confirmation is evaluated too,
+ * but purely as confluence: logged against the trade and folded into its
+ * reason when present, never required and never blocking when absent or
+ * when the Helius lookup itself fails.
+ */
 async function considerNewEntry(
   token: TokenConfig,
   config: WatchlistConfig,
@@ -85,52 +94,31 @@ async function considerNewEntry(
   liquidityUsd: number,
   mode: Mode,
 ): Promise<void> {
-  const trigger = await evaluateEntryTrigger(token, liquidityUsd);
-
-  if (!trigger.fired) {
-    insertSignalLog({
-      tokenAddress: token.address,
-      tokenSymbol: token.symbol,
-      onchainTriggerFired: false,
-      fibFilterPassed: null,
-      actionTaken: "none",
-      detail: JSON.stringify({
-        skipReason: trigger.skipReason,
-        candidatesConsidered: trigger.candidatesConsidered,
-        liquidityUsd: trigger.liquidityUsd,
-      }),
-    });
-    return;
-  }
-
   const candles = await fetchCandles(token);
-  const goldenPocket = checkGoldenPocket(candles, currentPrice, token.fibPivotWindow, token.goldenPocketZonePct);
+  const technical = evaluateTechnicalTrigger(candles, currentPrice, token);
 
-  if (!goldenPocket.passed) {
+  if (!technical.passed) {
     insertSignalLog({
       tokenAddress: token.address,
       tokenSymbol: token.symbol,
-      onchainTriggerFired: true,
-      fibFilterPassed: false,
+      technicalTriggerPassed: false,
+      onchainConfluencePresent: false,
       actionTaken: "none",
-      detail: JSON.stringify({
-        confirmingWallets: trigger.confirmingWallets.map((w) => w.walletAddress),
-        fibReason: goldenPocket.reason,
-      }),
+      detail: JSON.stringify({ skipReason: technical.reason }),
     });
     return;
   }
 
   const atr = computeATR(candles, token.atrPeriod);
-  const swing = goldenPocket.swing!;
+  const swing = technical.swing!;
   const stopPrice = atr !== undefined ? computeInitialStop(swing.lowPrice, atr, token.stopAtrMultiplier) : undefined;
 
   if (atr === undefined || stopPrice === undefined || stopPrice >= currentPrice) {
     insertSignalLog({
       tokenAddress: token.address,
       tokenSymbol: token.symbol,
-      onchainTriggerFired: true,
-      fibFilterPassed: true,
+      technicalTriggerPassed: true,
+      onchainConfluencePresent: false,
       actionTaken: "none",
       detail: JSON.stringify({
         skipReason: atr === undefined ? "not enough candle history for ATR" : "computed stop is not below entry price",
@@ -139,15 +127,25 @@ async function considerNewEntry(
     return;
   }
 
+  // Optional on-chain confluence -- never blocks the entry, including on error.
+  let confirmingWallets: Awaited<ReturnType<typeof evaluateEntryTrigger>>["confirmingWallets"] = [];
+  try {
+    const onchain = await evaluateEntryTrigger(token, liquidityUsd);
+    if (onchain.fired) confirmingWallets = onchain.confirmingWallets;
+  } catch (err) {
+    console.error(`[${token.symbol}] on-chain confluence check failed (non-blocking):`, err instanceof Error ? err.message : err);
+  }
+  const hasOnchainConfluence = confirmingWallets.length > 0;
+
   const bankrollUsd = await getBankrollUsd(mode);
   const circuitCheck = checkCircuitBreakers(mode, config.risk, bankrollUsd);
   if (!circuitCheck.allowed) {
-    console.log(`[${token.symbol}] entry trigger fired but blocked: ${circuitCheck.reason}`);
+    console.log(`[${token.symbol}] technical trigger fired but blocked: ${circuitCheck.reason}`);
     insertSignalLog({
       tokenAddress: token.address,
       tokenSymbol: token.symbol,
-      onchainTriggerFired: true,
-      fibFilterPassed: true,
+      technicalTriggerPassed: true,
+      onchainConfluencePresent: hasOnchainConfluence,
       actionTaken: "none",
       detail: JSON.stringify({ blockedBy: circuitCheck.reason }),
     });
@@ -157,19 +155,23 @@ async function considerNewEntry(
   const sizing = computePositionSize(bankrollUsd, currentPrice, stopPrice, config.risk.riskPctPerTrade, config.risk.maxPositionSizePct);
   const extensions = computeFibExtensions(swing, [token.extensionRatio1, token.extensionRatio2]);
 
+  const reason = hasOnchainConfluence
+    ? `${technical.reason} + on-chain confluence: ${confirmingWallets.length} confirming wallets`
+    : technical.reason;
+
   const plan: PlannedTradeInput = {
     tokenAddress: token.address,
     tokenSymbol: token.symbol,
     usdSize: sizing.usdSize,
     swingHigh: swing.highPrice,
     swingLow: swing.lowPrice,
-    fibZoneLevel: goldenPocket.matchedLevel!.level,
+    fibZoneLevel: technical.matchedLevel!.level,
     atrAtEntry: atr,
     extension1272Price: extensions.find((e) => e.level === token.extensionRatio1)!.price,
     extension1618Price: extensions.find((e) => e.level === token.extensionRatio2)!.price,
     stopPrice,
     timeExitDeadline: new Date(Date.now() + token.timeExitHours * 60 * 60 * 1000).toISOString(),
-    reason: `on-chain trigger: ${trigger.confirmingWallets.length} confirming wallets; ${goldenPocket.reason}`,
+    reason,
   };
 
   let tradeId: number;
@@ -180,15 +182,15 @@ async function considerNewEntry(
     insertSignalLog({
       tokenAddress: token.address,
       tokenSymbol: token.symbol,
-      onchainTriggerFired: true,
-      fibFilterPassed: true,
+      technicalTriggerPassed: true,
+      onchainConfluencePresent: hasOnchainConfluence,
       actionTaken: "none",
       detail: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
     });
     return;
   }
 
-  for (const wallet of trigger.confirmingWallets) {
+  for (const wallet of confirmingWallets) {
     insertTradeSignalWallet({
       tradeId,
       walletAddress: wallet.walletAddress,
@@ -200,18 +202,19 @@ async function considerNewEntry(
   }
 
   console.log(
-    `[${token.symbol}] opened ${mode} position #${tradeId}: $${sizing.usdSize.toFixed(2)} @ ${currentPrice} (stop ${stopPrice.toFixed(6)}, cap-limited=${sizing.cappedByMaxPosition})`,
+    `[${token.symbol}] opened ${mode} position #${tradeId}: $${sizing.usdSize.toFixed(2)} @ ${currentPrice} (stop ${stopPrice.toFixed(6)}, onchain confluence=${hasOnchainConfluence}, cap-limited=${sizing.cappedByMaxPosition})`,
   );
 
   insertSignalLog({
     tokenAddress: token.address,
     tokenSymbol: token.symbol,
-    onchainTriggerFired: true,
-    fibFilterPassed: true,
+    technicalTriggerPassed: true,
+    onchainConfluencePresent: hasOnchainConfluence,
     actionTaken: "buy",
     detail: JSON.stringify({
-      confirmingWallets: trigger.confirmingWallets.map((w) => w.walletAddress),
-      fibZoneLevel: goldenPocket.matchedLevel?.level,
+      technicalReason: technical.reason,
+      confirmingWallets: confirmingWallets.map((w) => w.walletAddress),
+      fibZoneLevel: technical.matchedLevel?.level,
       atr,
       stopPrice,
     }),
@@ -222,8 +225,8 @@ async function considerNewEntry(
 async function evaluateAndActOnToken(token: TokenConfig, config: WatchlistConfig, mode: Mode): Promise<void> {
   const overview = await getTokenOverview(token.address);
 
-  // Record all observed wallet activity first -- feeds both entry-trigger
-  // confirmation and the wallet reputation that improves as the bot runs.
+  // Record all observed wallet activity first -- feeds both on-chain
+  // confluence and the wallet reputation that improves as the bot runs.
   await pollWalletActivity(token, overview.price);
 
   const openTrade = getOpenTrade(token.address, mode);

@@ -14,6 +14,17 @@ const tokenConfigSchema = z.object({
   goldenPocketZonePct: z.number().positive(),
   swingLookbackHours: z.number().positive(),
 
+  trendSmaPeriod: z.number().int().positive(),
+  chopLookbackPeriods: z.number().int().positive(),
+  chopMaxCrossings: z.number().int().positive(),
+
+  rsiPeriod: z.number().int().positive(),
+  rsiMidline: z.number().min(0).max(100),
+  rsiOverboughtCeiling: z.number().min(0).max(100),
+
+  volumeAvgPeriod: z.number().int().positive(),
+  volumeConfirmationMultiplier: z.number().positive(),
+
   minBuyUsd: z.number().positive(),
   maxBuyPctOfLiquidity: z.number().positive().max(100),
   minWalletAgeDays: z.number().nonnegative(),
@@ -74,6 +85,9 @@ export function loadWatchlistConfig(configPath: string = env.WATCHLIST_CONFIG_PA
     }
     if (token.extensionRatio2 <= token.extensionRatio1) {
       throw new Error(`${token.symbol}: extensionRatio2 must be greater than extensionRatio1`);
+    }
+    if (token.rsiOverboughtCeiling <= token.rsiMidline) {
+      throw new Error(`${token.symbol}: rsiOverboughtCeiling must be greater than rsiMidline`);
     }
   }
 

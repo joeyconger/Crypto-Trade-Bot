@@ -3,12 +3,28 @@ export interface TokenConfig {
   address: string;
   enabled: boolean;
 
-  // fib filter (only ever evaluated after the on-chain trigger fires)
+  // Technical trigger -- the entry gate. Fires on trend + fib/structural
+  // confluence + RSI momentum + volume + confirmed candle close, with no
+  // on-chain confirmation required.
   fibPivotWindow: number; // candles on each side to confirm a swing pivot
-  goldenPocketZonePct: number; // % proximity to the 0.5/0.618 retracement to count as "at" it
-  swingLookbackHours: number; // how much OHLCV history to fetch for pivot detection
+  goldenPocketZonePct: number; // % proximity to the 0.5/0.618 retracement (and to a prior pivot for structural confluence) to count as "at" it
+  swingLookbackHours: number; // how much OHLCV history to fetch for pivot/indicator calculation
 
-  // on-chain entry trigger (the only signal that can trigger a trade)
+  trendSmaPeriod: number; // price must be above this SMA -- don't fight the trend
+  chopLookbackPeriods: number; // window to count MA crossings in
+  chopMaxCrossings: number; // >= this many crossings in the window means "too choppy," skip
+
+  rsiPeriod: number;
+  rsiMidline: number; // RSI must be below this and rising -- "turning up," not yet overbought
+  rsiOverboughtCeiling: number; // RSI above this means chasing, not catching a pullback
+
+  volumeAvgPeriod: number;
+  volumeConfirmationMultiplier: number; // reaction candle volume must be >= this x the average
+
+  // On-chain confluence (optional, non-blocking -- see onchain/entryTrigger.ts).
+  // A qualifying wallet buy alongside a fired technical trigger gets logged
+  // against the trade and noted in its reason, but its absence never blocks
+  // an entry.
   minBuyUsd: number;
   maxBuyPctOfLiquidity: number;
   minWalletAgeDays: number;

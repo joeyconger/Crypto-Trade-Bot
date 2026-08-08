@@ -425,8 +425,8 @@ export function getTradeSignalWallets(tradeId: number): TradeSignalWalletRow[] {
 export interface SignalLogInput {
   tokenAddress: string;
   tokenSymbol: string;
-  onchainTriggerFired: boolean;
-  fibFilterPassed: boolean | null;
+  technicalTriggerPassed: boolean;
+  onchainConfluencePresent: boolean;
   actionTaken: "none" | "buy" | "sell";
   detail: string;
   tradeId?: number;
@@ -435,14 +435,14 @@ export interface SignalLogInput {
 export function insertSignalLog(input: SignalLogInput): number {
   const result = getDb()
     .prepare(
-      `INSERT INTO signal_log (token_address, token_symbol, onchain_trigger_fired, fib_filter_passed, action_taken, detail, trade_id)
-       VALUES (@tokenAddress, @tokenSymbol, @onchainTriggerFired, @fibFilterPassed, @actionTaken, @detail, @tradeId)`,
+      `INSERT INTO signal_log (token_address, token_symbol, technical_trigger_passed, onchain_confluence_present, action_taken, detail, trade_id)
+       VALUES (@tokenAddress, @tokenSymbol, @technicalTriggerPassed, @onchainConfluencePresent, @actionTaken, @detail, @tradeId)`,
     )
     .run({
       tokenAddress: input.tokenAddress,
       tokenSymbol: input.tokenSymbol,
-      onchainTriggerFired: input.onchainTriggerFired ? 1 : 0,
-      fibFilterPassed: input.fibFilterPassed === null ? null : input.fibFilterPassed ? 1 : 0,
+      technicalTriggerPassed: input.technicalTriggerPassed ? 1 : 0,
+      onchainConfluencePresent: input.onchainConfluencePresent ? 1 : 0,
       actionTaken: input.actionTaken,
       detail: input.detail,
       tradeId: input.tradeId ?? null,
@@ -460,8 +460,8 @@ export interface SignalLogRow {
   token_address: string;
   token_symbol: string;
   evaluated_at: string;
-  onchain_trigger_fired: number;
-  fib_filter_passed: number | null;
+  technical_trigger_passed: number;
+  onchain_confluence_present: number;
   action_taken: "none" | "buy" | "sell";
   detail: string | null;
   trade_id: number | null;

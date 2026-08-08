@@ -1,37 +1,55 @@
 # Vibes & Fibs
 
-An autonomous Solana trading bot with a strict, structure-based strategy: an
-**on-chain wallet-confirmation trigger** is the only thing that can fire a
-trade, a **fib retracement filter** narrows the timing after that, and exits
-are managed with ATR-based stops and a scaled, structure-trailing take-profit.
-Ships in **paper trading mode by default** -- live trading is an explicit,
-double-gated opt-in.
+An autonomous Solana trading bot with a strict, structure-based strategy: a
+**technical setup is the entry gate on its own** -- it does not need a big
+wallet buying alongside it -- and **on-chain wallet confirmation is optional
+confluence**, logged against a trade and folded into its reason when it
+happens to coincide, but never required and never blocking when it's absent.
+Exits are managed with ATR-based stops and a scaled, structure-trailing
+take-profit. Ships in **paper trading mode by default** -- live trading is an
+explicit, double-gated opt-in.
 
 ## Strategy
 
-### Entry (all conditions required)
+### Entry (all technical conditions required; on-chain confluence is optional)
 
-**The on-chain trigger is the only signal that can fire a trade.** A wallet
-buy is a *candidate* only if:
-- Buy size >= `minBuyUsd` **and** <= `maxBuyPctOfLiquidity`% of pool
-  liquidity (bigger isn't more conviction, it's manipulation risk)
-- Wallet >= `minWalletAgeDays` old with >= `minWalletPriorTrades` prior
-  transactions
-- Wallet isn't tagged exchange/bridge/market-maker (`config/known-wallets.yaml`)
-- Wallet's last 5 observed buys didn't dump (sell the same token) within 24h
-  -- a local reputation score that starts neutral and updates as the bot
-  observes more, built entirely from what it's seen on your watchlist
+**The technical trigger (`src/signals/technicalTrigger.ts`) is the entry
+gate**, and it fires on its own -- no wallet activity required:
 
-A trade only fires once **>= `minConfirmingWallets`** separate,
-mutually-unconnected candidates buy within `confirmationWindowHours`. One
-wallet alone, however well it qualifies, never triggers anything.
+1. **Trend context** -- price above the `trendSmaPeriod` SMA (don't fight the
+   trend), and not choppy (fewer than `chopMaxCrossings` MA crossings in the
+   last `chopLookbackPeriods` candles -- fib/momentum setups both underperform
+   in a ranging market).
+2. **Fib zone + structural confluence** -- price within `goldenPocketZonePct`%
+   of the 0.5 or 0.618 retracement off the most recent *confirmed* swing (a
+   pivot needs `fibPivotWindow` candles flanking it on both sides before it
+   counts, not still-forming price action), **and** that level sits within
+   the same tolerance of a genuine prior pivot -- a fib ratio alone is weak,
+   fib stacked on an actual prior reaction level is a materially better setup.
+3. **Momentum confirmation** -- RSI(`rsiPeriod`) turning up from below
+   `rsiMidline` while price is in the zone (confirms momentum shifting back,
+   not just drifting through the level), and not already past
+   `rsiOverboughtCeiling` (catching a pullback, not chasing).
+4. **Volume confirmation** -- the reaction candle clears
+   `volumeConfirmationMultiplier`x the `volumeAvgPeriod`-period average. A
+   low-volume bounce is much more likely to fail.
+5. **Candle close confirmation** -- a full close back above the zone, not
+   just an intra-candle wick. Entering on the wick is how a level that gets
+   swept and reversed fakes you out.
 
-**The fib filter only narrows timing after the trigger fires -- it never
-triggers a trade by itself.** Current price must sit within
-`goldenPocketZonePct`% of the 0.5 or 0.618 retracement off the most recent
-*confirmed* swing (a pivot needs `fibPivotWindow` candles flanking it on both
-sides before it counts -- not still-forming price action). A confirmed
-downtrend is a hard no: this is a long-only bot, so it doesn't chase bounces.
+A confirmed downtrend is a hard no regardless of the above: this is a
+long-only bot, so it doesn't chase bounces in a structure that's still falling.
+
+**On-chain wallet confirmation is evaluated independently as confluence, not
+a gate** (`src/onchain/entryTrigger.ts`): >= `minConfirmingWallets` separate,
+mutually-unconnected wallets each buying >= `minBuyUsd` and <=
+`maxBuyPctOfLiquidity`% of pool liquidity, >= `minWalletAgeDays` old with
+prior history, untagged, and with a clean local reputation (no dump within
+24h across their last 5 observed buys -- starts neutral, builds up from what
+the bot itself observes). When this coincides with a fired technical trigger,
+it's recorded against the trade (`trade_signal_wallets`) and noted in the
+trade's reason; when it's absent, or the Helius lookup itself fails, the
+technical trigger still fires the trade on its own.
 
 ### Position sizing
 
@@ -104,12 +122,16 @@ config/known-wallets.yaml   -- exchange/bridge/market-maker denylist (user-maint
         v
 src/engine/loop.ts           -- polls on an interval, per enabled token:
         |
+        +--> src/signals/technicalTrigger.ts   (the entry gate -- trend, fib+structural
+        |      +--> src/signals/fib.ts              confluence, RSI, volume, close confirmation)
+        |      +--> src/signals/sma.ts
+        |      +--> src/signals/rsi.ts
+        |      +--> src/signals/atr.ts               (ATR(14), Wilder's smoothing, for the stop)
+        |
         +--> src/onchain/walletActivity.ts    (records every observed buy/sell)
-        +--> src/onchain/entryTrigger.ts      (candidates -> independent confirmation)
-        |      +--> src/onchain/walletReputation.ts  (age/tag/local reputation)
-        |      +--> src/onchain/walletConnectivity.ts (heuristic: are two wallets connected?)
-        +--> src/signals/fib.ts               (confirmed swing -> golden pocket check)
-        +--> src/signals/atr.ts               (ATR(14), Wilder's smoothing)
+        +--> src/onchain/entryTrigger.ts      (OPTIONAL confluence, never blocking --
+               +--> src/onchain/walletReputation.ts    candidates -> independent confirmation)
+               +--> src/onchain/walletConnectivity.ts  (heuristic: are two wallets connected?)
         |
         v
 src/execution/positionSizing.ts   -- risk-based size, ATR stop
@@ -158,7 +180,7 @@ starting balance, dashboard port, DB path, watchlist config path).
 If you only set `HELIUS_API_KEY` and leave `SOLANA_RPC_URL` at its default,
 the bot automatically uses Helius's RPC instead of the public one.
 
-### Known limitations in the on-chain trigger (flagged, not hidden)
+### Known limitations in the on-chain confluence check (flagged, not hidden)
 
 - **`config/known-wallets.yaml` ships empty.** There's no reliable free API
   that labels Solana wallets as exchange/bridge/market-maker, and hot wallets
@@ -187,6 +209,17 @@ tokens:
     fibPivotWindow: 5
     goldenPocketZonePct: 1
     swingLookbackHours: 72
+
+    trendSmaPeriod: 50
+    chopLookbackPeriods: 20
+    chopMaxCrossings: 3
+
+    rsiPeriod: 14
+    rsiMidline: 50
+    rsiOverboughtCeiling: 70
+
+    volumeAvgPeriod: 20
+    volumeConfirmationMultiplier: 1.5
 
     minBuyUsd: 5000
     maxBuyPctOfLiquidity: 3
@@ -219,15 +252,39 @@ time). `risk` applies globally across all tokens.
 
 ## Logging & visibility
 
-Every entry-trigger evaluation is written to `signal_log` -- including the
-ones that don't lead to a trade -- with whether the on-chain trigger fired,
-whether the fib filter passed, and a detail blob (candidates considered, skip
-reason, confirming wallets). Every trade records its confirming wallets and
-their reputation at entry (`trade_signal_wallets`), and every partial exit is
-its own row in `position_exits` (tranche, price, reason, P&L), so a closed
-trade's full lifecycle -- entry context, each scale-out, final close -- is
-reconstructable from the DB, not just a single row's summary. The dashboard's
-Signal History and per-position cards are a live view of all of this.
+Every entry evaluation is written to `signal_log` -- including the ones that
+don't lead to a trade -- with whether the technical trigger passed, whether
+on-chain confluence happened to be present, and a detail blob (which
+technical condition failed, skip reason, confirming wallets if any). Every
+trade records its confirming wallets and their reputation at entry
+(`trade_signal_wallets`, empty when the trade fired on technicals alone), and
+every partial exit is its own row in `position_exits` (tranche, price,
+reason, P&L), so a closed trade's full lifecycle -- entry context, each
+scale-out, final close -- is reconstructable from the DB, not just a single
+row's summary. The dashboard's Signal History and per-position cards are a
+live view of all of this.
+
+## Running a multi-day paper trial and keeping the data
+
+SQLite is more than sufficient for this at any reasonable scale (weeks or
+months of signal/trade history) -- **you don't need Postgres.** The real risk
+to a multi-day run isn't the database engine, it's that **Railway's container
+filesystem is ephemeral by default**: every redeploy (including one to tweak
+the strategy mid-run) spins up a fresh container, and `data/bot.sqlite` goes
+with it unless it's on persistent storage. Before starting a run you care
+about:
+
+1. In the Railway dashboard, add a **Volume** to the service, mounted at
+   e.g. `/data`.
+2. Set `DATABASE_PATH=/data/bot.sqlite` in the service's env vars.
+3. Redeploy once with that in place.
+
+After that, the SQLite file survives redeploys independently of the app
+container -- tweak the watchlist config or strategy code and push freely
+without losing history. To analyze afterward, pull the file down (`railway
+ssh` or a one-off script reading `/data/bot.sqlite`) and query it directly,
+or use `npm run evaluate` / the dashboard's API endpoints (`/api/signals`,
+`/api/trades`) as a lighter-weight read path than pulling the whole DB.
 
 ## Flipping paper -> live
 

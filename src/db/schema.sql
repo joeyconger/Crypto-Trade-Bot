@@ -127,10 +127,13 @@ CREATE TABLE IF NOT EXISTS signal_log (
   token_symbol TEXT NOT NULL,
   evaluated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
 
-  onchain_trigger_fired INTEGER NOT NULL DEFAULT 0,
-  fib_filter_passed INTEGER, -- NULL if the on-chain trigger never fired (fib isn't evaluated)
+  -- Technical trigger (trend + fib/structural confluence + RSI + volume +
+  -- close confirmation) is the entry gate. On-chain wallet confirmation is
+  -- optional confluence, evaluated independently and never blocking.
+  technical_trigger_passed INTEGER NOT NULL DEFAULT 0,
+  onchain_confluence_present INTEGER NOT NULL DEFAULT 0,
   action_taken TEXT NOT NULL DEFAULT 'none' CHECK (action_taken IN ('none', 'buy', 'sell')),
-  detail TEXT, -- JSON: candidate wallets considered, confirmation status, fib zone check, skip reason
+  detail TEXT, -- JSON: which technical conditions passed/failed, confirming wallets if any, skip reason
 
   trade_id INTEGER REFERENCES trades (id)
 );

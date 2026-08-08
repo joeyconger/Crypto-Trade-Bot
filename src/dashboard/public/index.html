@@ -494,7 +494,7 @@
       <table>
         <thead>
           <tr>
-            <th>Time</th><th>Token</th><th>On-chain trigger</th><th>Fib filter</th>
+            <th>Time</th><th>Token</th><th>Technical trigger</th><th>On-chain confluence</th>
             <th>Action</th><th class="reason">Detail</th>
           </tr>
         </thead>
@@ -688,18 +688,15 @@
       let detail = "";
       try {
         const d = JSON.parse(s.detail || "{}");
-        detail = d.skipReason || d.blockedBy || d.fibReason || d.error ||
-          (d.confirmingWallets ? `wallets: ${d.confirmingWallets.map(fmtWallet).join(", ")}` : "") || "";
+        detail = d.skipReason || d.blockedBy || d.technicalReason || d.error ||
+          (d.confirmingWallets && d.confirmingWallets.length ? `wallets: ${d.confirmingWallets.map(fmtWallet).join(", ")}` : "") || "";
       } catch {}
-      const fibCell = s.fib_filter_passed === null
-        ? '<span class="pill none">n/a</span>'
-        : `<span class="pill ${s.fib_filter_passed ? "yes" : "no"}">${s.fib_filter_passed ? "passed" : "failed"}</span>`;
       return `
       <tr>
         <td>${fmtTime(s.evaluated_at)}</td>
         <td class="sym">${esc(s.token_symbol)}</td>
-        <td><span class="pill ${s.onchain_trigger_fired ? "yes" : "no"}">${s.onchain_trigger_fired ? "fired" : "no"}</span></td>
-        <td>${fibCell}</td>
+        <td><span class="pill ${s.technical_trigger_passed ? "yes" : "no"}">${s.technical_trigger_passed ? "passed" : "failed"}</span></td>
+        <td><span class="pill ${s.onchain_confluence_present ? "yes" : "no"}">${s.onchain_confluence_present ? "present" : "none"}</span></td>
         <td><span class="pill ${s.action_taken}">${s.action_taken}</span></td>
         <td class="reason">${esc(detail)}</td>
       </tr>

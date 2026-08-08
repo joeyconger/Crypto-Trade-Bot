@@ -3,26 +3,42 @@
 # Each token gets its own strategy parameters. Add/remove tokens here without
 # touching any code -- the bot reloads this file at the start of each poll cycle.
 #
-# Entry logic: the on-chain trigger (wallet buy confirmation) is the ONLY
-# thing that can fire a trade. The fib filter below only narrows timing after
-# that fires -- it never triggers a trade on its own.
+# Entry logic: the TECHNICAL trigger is the entry gate -- trend + fib/
+# structural confluence + RSI momentum + volume + a confirmed candle close,
+# all required, no big wallet needed. On-chain wallet confirmation is
+# evaluated too, but purely as optional confluence: logged against the trade
+# and folded into its reason when present, never required to fire an entry.
 tokens:
   - symbol: BONK
     address: DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263
     enabled: true
 
-    # --- fib filter (evaluated only after the on-chain trigger fires) ---
+    # --- fib zone + structural confluence ---
     fibPivotWindow: 5 # candles required on each side to confirm a swing pivot
-    goldenPocketZonePct: 1 # price must be within this % of the 0.5/0.618 retracement
-    swingLookbackHours: 72 # how much price history to pull for pivot detection
+    goldenPocketZonePct: 1 # price must be within this % of the 0.5/0.618 retracement, and that level within this % of a prior pivot
+    swingLookbackHours: 72 # how much price history to pull for pivot/indicator calculation
 
-    # --- on-chain entry trigger ---
+    # --- trend context filter (don't fight the trend) ---
+    trendSmaPeriod: 50
+    chopLookbackPeriods: 20 # window to count MA crossings in
+    chopMaxCrossings: 3 # this many crossings in the window means "too choppy," skip
+
+    # --- momentum confirmation (buy the reaction, not the touch) ---
+    rsiPeriod: 14
+    rsiMidline: 50 # RSI must be below this and rising
+    rsiOverboughtCeiling: 70 # RSI above this means chasing, not catching a pullback
+
+    # --- volume confirmation on the reaction candle ---
+    volumeAvgPeriod: 20
+    volumeConfirmationMultiplier: 1.5
+
+    # --- on-chain confluence (optional, non-blocking) ---
     minBuyUsd: 5000
     maxBuyPctOfLiquidity: 3 # buys above this % of pool liquidity are treated as manipulation risk, not conviction
     minWalletAgeDays: 14
     minWalletPriorTrades: 1 # "prior trade history" -- at least this many txs found in the wallet's own history
     confirmationWindowHours: 4
-    minConfirmingWallets: 2 # one whale alone never triggers
+    minConfirmingWallets: 2 # one whale alone doesn't count as confluence either
 
     # --- ATR-based stop ---
     atrPeriod: 14
@@ -44,6 +60,17 @@ tokens:
     fibPivotWindow: 5
     goldenPocketZonePct: 1
     swingLookbackHours: 72
+
+    trendSmaPeriod: 50
+    chopLookbackPeriods: 20
+    chopMaxCrossings: 3
+
+    rsiPeriod: 14
+    rsiMidline: 50
+    rsiOverboughtCeiling: 70
+
+    volumeAvgPeriod: 20
+    volumeConfirmationMultiplier: 1.5
 
     minBuyUsd: 5000
     maxBuyPctOfLiquidity: 3
