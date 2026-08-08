@@ -346,7 +346,7 @@
 
   <div class="kpi-grid">
     <div class="card kpi">
-      <div class="label">Paper balance</div>
+      <div class="label" id="kpiBalanceLabel">Paper balance</div>
       <div class="value" id="kpiBalance">&mdash;</div>
       <div class="sub" id="kpiBalanceSub">&nbsp;</div>
     </div>
@@ -478,8 +478,11 @@
       refreshStatus();
     };
 
+    document.getElementById("kpiBalanceLabel").textContent = s.mode === "live" ? "Live wallet balance" : "Paper balance";
     document.getElementById("kpiBalance").textContent = fmtUsd(s.equity.currentBalanceUsd).replace("&mdash;", "-");
-    document.getElementById("kpiBalanceSub").textContent = `of $${s.equity.startingBalanceUsd.toLocaleString()} starting`;
+    document.getElementById("kpiBalanceSub").textContent = s.mode === "live"
+      ? "bot's SOL, priced in USD"
+      : `of $${s.equity.startingBalanceUsd.toLocaleString()} starting`;
 
     const allTime = document.getElementById("kpiAllTime");
     allTime.textContent = fmtUsd(s.equity.realizedPnlAllTimeUsd);

@@ -1,14 +1,21 @@
+import { env } from "../config/env.js";
 import { loadWatchlistConfig } from "../config/watchlist.js";
-import { syncWatchlistTokens, getBotState } from "../db/index.js";
+import { syncWatchlistTokens, getBotState, getOpenTrade } from "../db/index.js";
 import { evaluateToken, logSignalEvaluation } from "./scoring.js";
 import { getRiskState, canOpenPosition, computePositionSizeUsd } from "../execution/risk.js";
-import { getOpenTrade, openPaperPosition, closePaperPosition } from "../execution/paperTrading.js";
+import { openPaperPosition, closePaperPosition } from "../execution/paperTrading.js";
+import { openLivePosition, closeLivePosition, getBotWalletBalanceUsd } from "../execution/liveTrading.js";
 import type { TokenConfig, WatchlistConfig } from "../types/index.js";
 
+async function getBankrollUsd(mode: "paper" | "live"): Promise<number> {
+  return mode === "live" ? getBotWalletBalanceUsd() : env.PAPER_STARTING_BALANCE_USD;
+}
+
 async function evaluateAndActOnToken(token: TokenConfig, config: WatchlistConfig): Promise<void> {
+  const mode = env.liveTradingEnabled ? "live" : "paper";
   const result = await evaluateToken(token);
   const currentPrice = result.technical.currentPrice;
-  const openTrade = getOpenTrade(token.address);
+  const openTrade = getOpenTrade(token.address, mode);
 
   if (openTrade) {
     let exitReason: string | undefined;
@@ -21,8 +28,12 @@ async function evaluateAndActOnToken(token: TokenConfig, config: WatchlistConfig
     }
 
     if (exitReason) {
-      closePaperPosition(openTrade, currentPrice, exitReason);
-      console.log(`[${token.symbol}] closed paper position #${openTrade.id}: ${exitReason}`);
+      if (mode === "live") {
+        await closeLivePosition(openTrade, exitReason);
+      } else {
+        closePaperPosition(openTrade, currentPrice, exitReason);
+      }
+      console.log(`[${token.symbol}] closed ${mode} position #${openTrade.id}: ${exitReason}`);
       logSignalEvaluation(result, openTrade.id);
       return;
     }
@@ -32,7 +43,8 @@ async function evaluateAndActOnToken(token: TokenConfig, config: WatchlistConfig
   }
 
   if (result.action === "buy") {
-    const riskState = getRiskState(config.risk);
+    const bankrollUsd = await getBankrollUsd(mode);
+    const riskState = getRiskState(config.risk, bankrollUsd, mode);
     const { allowed, reason: blockReason } = canOpenPosition(config.risk, riskState);
 
     if (!allowed) {
@@ -41,13 +53,17 @@ async function evaluateAndActOnToken(token: TokenConfig, config: WatchlistConfig
       return;
     }
 
-    const usdSize = computePositionSizeUsd(token, config.risk);
+    const usdSize = computePositionSizeUsd(token, config.risk, bankrollUsd);
     const openReason =
       `buy signal (combined score ${result.combinedScore.toFixed(2)}): ` +
       `technical=${result.technical.score.toFixed(2)}, onchain=${result.onchain.score.toFixed(2)}, social=${result.social.score.toFixed(2)}`;
 
-    const tradeId = openPaperPosition(token, currentPrice, usdSize, openReason);
-    console.log(`[${token.symbol}] opened paper position #${tradeId}: $${usdSize.toFixed(2)} @ ${currentPrice}`);
+    const tradeId =
+      mode === "live"
+        ? await openLivePosition(token, usdSize, openReason)
+        : openPaperPosition(token, currentPrice, usdSize, openReason);
+
+    console.log(`[${token.symbol}] opened ${mode} position #${tradeId}: $${usdSize.toFixed(2)} @ ${currentPrice}`);
     logSignalEvaluation(result, tradeId);
     return;
   }

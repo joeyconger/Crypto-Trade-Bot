@@ -13,6 +13,7 @@ import {
 } from "../db/index.js";
 import { getRiskState } from "../execution/risk.js";
 import { getTokenOverview } from "../data/birdeye.js";
+import { getBotWalletBalanceUsd } from "../execution/liveTrading.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -20,15 +21,26 @@ export function createDashboardServer() {
   const app = express();
   app.use(express.static(path.join(__dirname, "public")));
 
-  app.get("/api/status", (_req, res) => {
+  app.get("/api/status", async (_req, res) => {
     const config = loadWatchlistConfig();
     const enabledTokens = config.tokens.filter((t) => t.enabled);
-    const riskState = getRiskState(config.risk);
+    const mode = env.liveTradingEnabled ? "live" : "paper";
+
+    let bankrollUsd = env.PAPER_STARTING_BALANCE_USD;
+    if (mode === "live") {
+      try {
+        bankrollUsd = await getBotWalletBalanceUsd();
+      } catch (err) {
+        console.error("Failed to fetch live bankroll for dashboard:", err instanceof Error ? err.message : err);
+      }
+    }
+
+    const riskState = getRiskState(config.risk, bankrollUsd, mode);
     const botState = getBotState();
     const realizedPnlAllTimeUsd = getRealizedPnlAllTime();
 
     res.json({
-      mode: env.liveTradingEnabled ? "live" : "paper",
+      mode,
       paused: botState.paused,
       pollIntervalSeconds: env.POLL_INTERVAL_SECONDS,
       watchlist: { enabled: enabledTokens.length, total: config.tokens.length },
@@ -40,9 +52,9 @@ export function createDashboardServer() {
         haltedForDailyLoss: riskState.haltedForDailyLoss,
       },
       equity: {
-        startingBalanceUsd: env.PAPER_STARTING_BALANCE_USD,
+        startingBalanceUsd: bankrollUsd,
         realizedPnlAllTimeUsd,
-        currentBalanceUsd: env.PAPER_STARTING_BALANCE_USD + realizedPnlAllTimeUsd,
+        currentBalanceUsd: mode === "live" ? bankrollUsd : bankrollUsd + realizedPnlAllTimeUsd,
       },
     });
   });

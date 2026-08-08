@@ -159,6 +159,17 @@ export function getOpenTrades(): TradeRow[] {
   return getDb().prepare(`SELECT * FROM trades WHERE status = 'open' ORDER BY opened_at DESC`).all() as TradeRow[];
 }
 
+/**
+ * At most one open position per token at a time, scoped to the current mode
+ * so a leftover paper position (e.g. from testing) can never block or get
+ * confused with a live one on the same token, or vice versa.
+ */
+export function getOpenTrade(tokenAddress: string, mode: "paper" | "live"): TradeRow | undefined {
+  return getDb()
+    .prepare(`SELECT * FROM trades WHERE token_address = ? AND status = 'open' AND mode = ? LIMIT 1`)
+    .get(tokenAddress, mode) as TradeRow | undefined;
+}
+
 export function getClosedTrades(limit = 50): TradeRow[] {
   return getDb()
     .prepare(`SELECT * FROM trades WHERE status = 'closed' ORDER BY closed_at DESC LIMIT ?`)

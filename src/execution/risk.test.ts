@@ -39,11 +39,16 @@ test("canOpenPosition allows when under both limits", () => {
 
 test("computePositionSizeUsd caps a token's positionSizePct at the global ceiling", () => {
   // token wants 25%, global ceiling is 10% -> capped
-  const size = computePositionSizeUsd({ positionSizePct: 25 }, risk);
-  assert.equal(size, 1000 * 0.1); // default PAPER_STARTING_BALANCE_USD is 1000
+  const size = computePositionSizeUsd({ positionSizePct: 25 }, risk, 1000);
+  assert.equal(size, 1000 * 0.1);
 });
 
 test("computePositionSizeUsd uses the token's own pct when under the ceiling", () => {
-  const size = computePositionSizeUsd({ positionSizePct: 5 }, risk);
+  const size = computePositionSizeUsd({ positionSizePct: 5 }, risk, 1000);
   assert.equal(size, 1000 * 0.05);
+});
+
+test("computePositionSizeUsd scales with a different bankroll (e.g. live wallet balance)", () => {
+  const size = computePositionSizeUsd({ positionSizePct: 5 }, risk, 240);
+  assert.equal(size, 240 * 0.05);
 });
