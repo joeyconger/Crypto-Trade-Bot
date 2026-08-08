@@ -1,0 +1,73 @@
+# Vibes & Fibs watchlist
+#
+# Each token gets its own strategy parameters. Add/remove tokens here without
+# touching any code — the bot reloads this file at the start of each poll cycle.
+tokens:
+  - symbol: BONK
+    address: DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263
+    enabled: true
+
+    # --- technical (fib + support/resistance) ---
+    fibLevels: [0.236, 0.382, 0.5, 0.618, 0.786]
+    swingLookbackHours: 72
+    confluenceZonePct: 1.5 # price must be within this % of a fib level to count as "at" it
+
+    # --- on-chain ---
+    whaleUsdThreshold: 25000 # single tx size that counts as a "whale" move
+    volumeSpikeMultiplier: 3 # current volume vs rolling average that counts as a spike
+
+    # --- social ---
+    # Twitter accounts (handles, no @) whose tweets mentioning this token's
+    # symbol/name feed the social signal. Shared list can also be set globally
+    # in twitterAccounts below; per-token list is additive.
+    twitterKeywords: [BONK, "$BONK"]
+
+    # --- signal weights (must sum to 1.0 across the three signals) ---
+    weights:
+      technical: 0.5
+      onchain: 0.35
+      social: 0.15
+
+    # --- combined score thresholds, range [-1, 1] ---
+    buyThreshold: 0.6
+    sellThreshold: -0.6
+
+    # --- position sizing & risk ---
+    positionSizePct: 5 # % of trading bankroll per position
+    stopLossPct: 8
+    takeProfitPct: 20
+
+  - symbol: WIF
+    address: EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm
+    enabled: true
+
+    fibLevels: [0.236, 0.382, 0.5, 0.618, 0.786]
+    swingLookbackHours: 72
+    confluenceZonePct: 1.5
+
+    whaleUsdThreshold: 25000
+    volumeSpikeMultiplier: 3
+
+    twitterKeywords: [WIF, "$WIF", dogwifhat]
+
+    weights:
+      technical: 0.5
+      onchain: 0.35
+      social: 0.15
+
+    buyThreshold: 0.6
+    sellThreshold: -0.6
+
+    positionSizePct: 5
+    stopLossPct: 8
+    takeProfitPct: 20
+
+# Fixed watchlist of Twitter/X accounts to poll for social signal (handles, no @).
+# Fill this in with the accounts you want tracked.
+twitterAccounts: []
+
+# Global risk management (applies across all tokens/positions).
+risk:
+  maxConcurrentPositions: 5
+  maxPositionSizePct: 10 # hard ceiling, overrides any per-token positionSizePct above it
+  dailyLossLimitPct: 10 # halt all trading for the day if realized+unrealized loss exceeds this % of bankroll

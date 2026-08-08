@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+*.log
+
+# SQLite data (generated at runtime, keep dir with .gitkeep)
+data/*.sqlite
+data/*.sqlite-journal
+data/*.sqlite-wal
+data/*.sqlite-shm
