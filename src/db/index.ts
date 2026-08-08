@@ -62,3 +62,39 @@ export function syncWatchlistTokens(config: WatchlistConfig): void {
 
   tx(config.tokens);
 }
+
+export function getLastTxSignature(tokenAddress: string): string | undefined {
+  const row = getDb()
+    .prepare(`SELECT last_tx_signature FROM watchlist_tokens WHERE address = ?`)
+    .get(tokenAddress) as { last_tx_signature: string | null } | undefined;
+  return row?.last_tx_signature ?? undefined;
+}
+
+export function setLastTxSignature(tokenAddress: string, signature: string): void {
+  getDb()
+    .prepare(
+      `UPDATE watchlist_tokens SET last_tx_signature = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE address = ?`,
+    )
+    .run(signature, tokenAddress);
+}
+
+export interface OnchainSnapshotRow {
+  liquidity_usd: number;
+  volume_24h_usd: number;
+  captured_at: string;
+}
+
+export function insertOnchainSnapshot(tokenAddress: string, liquidityUsd: number, volume24hUsd: number): void {
+  getDb()
+    .prepare(`INSERT INTO onchain_snapshots (token_address, liquidity_usd, volume_24h_usd) VALUES (?, ?, ?)`)
+    .run(tokenAddress, liquidityUsd, volume24hUsd);
+}
+
+export function getRecentOnchainSnapshots(tokenAddress: string, limit = 10): OnchainSnapshotRow[] {
+  return getDb()
+    .prepare(
+      `SELECT liquidity_usd, volume_24h_usd, captured_at FROM onchain_snapshots
+       WHERE token_address = ? ORDER BY captured_at DESC LIMIT ?`,
+    )
+    .all(tokenAddress, limit) as OnchainSnapshotRow[];
+}

@@ -7,9 +7,25 @@ CREATE TABLE IF NOT EXISTS watchlist_tokens (
   symbol TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   config_json TEXT NOT NULL,
+  -- Cursor for whale-move polling (src/onchain/whales.ts): the most recent
+  -- Helius tx signature already scored, so each poll only looks at new ones.
+  last_tx_signature TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+-- Our own history of Birdeye liquidity/volume snapshots, since the free tier
+-- doesn't expose historical liquidity -- we build the rolling average ourselves
+-- from what we've observed across poll cycles.
+CREATE TABLE IF NOT EXISTS onchain_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_address TEXT NOT NULL,
+  captured_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  liquidity_usd REAL NOT NULL,
+  volume_24h_usd REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_onchain_snapshots_token ON onchain_snapshots (token_address, captured_at);
 
 CREATE TABLE IF NOT EXISTS trades (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
