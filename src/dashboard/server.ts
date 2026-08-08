@@ -10,49 +10,91 @@ import {
   getBotState,
   setPaused,
   getRealizedPnlAllTime,
+  getRealizedPnlSince,
+  getPositionExits,
+  getTradeSignalWallets,
+  getCircuitBreakerState,
 } from "../db/index.js";
-import { getRiskState } from "../execution/risk.js";
+import { checkCircuitBreakers, resumeWeeklyHalt, resumeConsecutiveLossHalt } from "../execution/circuitBreakers.js";
 import { getTokenOverview } from "../data/birdeye.js";
 import { getBotWalletBalanceUsd } from "../execution/liveTrading.js";
+import type { RiskConfig } from "../types/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+function todayStartIso(): string {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+}
+
+function sevenDaysAgoIso(): string {
+  return new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+}
+
+async function resolveMode(): Promise<{ mode: "paper" | "live"; bankrollUsd: number }> {
+  const mode = env.liveTradingEnabled ? "live" : "paper";
+  if (mode === "paper") return { mode, bankrollUsd: env.PAPER_STARTING_BALANCE_USD };
+
+  try {
+    return { mode, bankrollUsd: await getBotWalletBalanceUsd() };
+  } catch (err) {
+    console.error("Failed to fetch live bankroll for dashboard:", err instanceof Error ? err.message : err);
+    return { mode, bankrollUsd: 0 };
+  }
+}
+
+/**
+ * A single, unambiguous run state -- paused (manual) / halted (a circuit
+ * breaker tripped) / running -- never two truths at once. Paused always wins
+ * (the manual override); halted covers daily/weekly/consecutive-loss limits,
+ * any of which still let existing positions keep being managed for exit,
+ * they just block new entries.
+ */
+function computeRunState(mode: "paper" | "live", risk: RiskConfig, bankrollUsd: number) {
+  if (getBotState().paused) return { state: "paused" as const };
+
+  const check = checkCircuitBreakers(mode, risk, bankrollUsd);
+  if (!check.allowed) return { state: "halted" as const, reason: check.reason };
+
+  return { state: "running" as const };
+}
+
 export function createDashboardServer() {
   const app = express();
+  app.use(express.json());
   app.use(express.static(path.join(__dirname, "public")));
 
   app.get("/api/status", async (_req, res) => {
     const config = loadWatchlistConfig();
     const enabledTokens = config.tokens.filter((t) => t.enabled);
-    const mode = env.liveTradingEnabled ? "live" : "paper";
+    const { mode, bankrollUsd } = await resolveMode();
 
-    let bankrollUsd = env.PAPER_STARTING_BALANCE_USD;
-    if (mode === "live") {
-      try {
-        bankrollUsd = await getBotWalletBalanceUsd();
-      } catch (err) {
-        console.error("Failed to fetch live bankroll for dashboard:", err instanceof Error ? err.message : err);
-      }
-    }
-
-    const riskState = getRiskState(config.risk, bankrollUsd, mode);
-    const botState = getBotState();
+    const runState = computeRunState(mode, config.risk, bankrollUsd);
+    const cbState = getCircuitBreakerState();
     const realizedPnlAllTimeUsd = getRealizedPnlAllTime();
+    const dailyPnl = getRealizedPnlSince(mode, todayStartIso());
+    const weeklyPnl = getRealizedPnlSince(mode, sevenDaysAgoIso());
 
     res.json({
       mode,
-      paused: botState.paused,
+      runState,
       pollIntervalSeconds: env.POLL_INTERVAL_SECONDS,
       watchlist: { enabled: enabledTokens.length, total: config.tokens.length },
+      openPositionsCount: getOpenTrades().filter((t) => t.mode === mode).length,
       risk: {
-        openPositionsCount: riskState.openPositionsCount,
-        maxConcurrentPositions: config.risk.maxConcurrentPositions,
-        realizedPnlTodayUsd: riskState.realizedPnlTodayUsd,
-        dailyLossLimitUsd: riskState.dailyLossLimitUsd,
-        haltedForDailyLoss: riskState.haltedForDailyLoss,
+        riskPctPerTrade: config.risk.riskPctPerTrade,
+        maxPositionSizePct: config.risk.maxPositionSizePct,
+        dailyPnlUsd: dailyPnl,
+        dailyLimitUsd: bankrollUsd * (config.risk.dailyLossLimitPct / 100),
+        weeklyPnlUsd: weeklyPnl,
+        weeklyLimitUsd: bankrollUsd * (config.risk.weeklyLossLimitPct / 100),
+        weeklyHalted: !!cbState.weekly_halted,
+        consecutiveLosses: cbState.consecutive_losses,
+        consecutiveLossLimit: config.risk.consecutiveLossLimit,
+        consecutiveLossHalted: !!cbState.consecutive_loss_halted,
       },
       equity: {
-        startingBalanceUsd: bankrollUsd,
+        bankrollUsd,
         realizedPnlAllTimeUsd,
         currentBalanceUsd: mode === "live" ? bankrollUsd : bankrollUsd + realizedPnlAllTimeUsd,
       },
@@ -64,18 +106,22 @@ export function createDashboardServer() {
 
     const positions = await Promise.all(
       trades.map(async (trade) => {
+        const exits = getPositionExits(trade.id);
+        const wallets = getTradeSignalWallets(trade.id);
+
         try {
           const overview = await getTokenOverview(trade.token_address);
-          const unrealizedPnlUsd = (overview.price - trade.entry_price) * trade.quantity;
+          const unrealizedPnlUsd = (overview.price - trade.entry_price) * trade.quantity_remaining;
           return {
             ...trade,
             currentPrice: overview.price,
             unrealizedPnlUsd,
             unrealizedPnlPct: (unrealizedPnlUsd / trade.usd_size) * 100,
+            exits,
+            wallets,
           };
         } catch {
-          // Live price unavailable this cycle -- still show the static position fields.
-          return { ...trade, currentPrice: null, unrealizedPnlUsd: null, unrealizedPnlPct: null };
+          return { ...trade, currentPrice: null, unrealizedPnlUsd: null, unrealizedPnlPct: null, exits, wallets };
         }
       }),
     );
@@ -85,7 +131,8 @@ export function createDashboardServer() {
 
   app.get("/api/trades", (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 50, 200);
-    res.json(getClosedTrades(limit));
+    const trades = getClosedTrades(limit);
+    res.json(trades.map((trade) => ({ ...trade, exits: getPositionExits(trade.id), wallets: getTradeSignalWallets(trade.id) })));
   });
 
   app.get("/api/signals", (req, res) => {
@@ -101,6 +148,16 @@ export function createDashboardServer() {
   app.post("/api/resume", (_req, res) => {
     setPaused(false);
     res.json({ paused: false });
+  });
+
+  app.post("/api/resume-weekly-halt", (_req, res) => {
+    resumeWeeklyHalt();
+    res.json({ weeklyHalted: false });
+  });
+
+  app.post("/api/resume-consecutive-loss-halt", (_req, res) => {
+    resumeConsecutiveLossHalt();
+    res.json({ consecutiveLossHalted: false });
   });
 
   return app;

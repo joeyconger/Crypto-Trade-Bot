@@ -9,15 +9,23 @@ export interface HeliusTokenTransfer {
   mint: string;
 }
 
+export interface HeliusNativeTransfer {
+  fromUserAccount?: string;
+  toUserAccount?: string;
+  amount: number; // lamports
+}
+
 export interface HeliusTransaction {
   signature: string;
   timestamp: number;
   type: string;
   feePayer: string;
   tokenTransfers: HeliusTokenTransfer[];
+  nativeTransfers: HeliusNativeTransfer[];
 }
 
-export async function getRecentTokenTransactions(
+/** Address-agnostic: works for a token mint (all swaps touching it) or a wallet (its own tx history). */
+export async function getRecentTransactions(
   address: string,
   opts: { limit?: number; before?: string } = {},
 ): Promise<HeliusTransaction[]> {

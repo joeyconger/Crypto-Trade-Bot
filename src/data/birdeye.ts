@@ -36,6 +36,15 @@ export interface OhlcvCandle {
   volume: number;
 }
 
+// Interval scales with the configured lookback so a token watched over a few
+// hours gets fine-grained candles, while a multi-week lookback doesn't over-fetch.
+export function pickOhlcvInterval(lookbackHours: number): OhlcvInterval {
+  if (lookbackHours <= 12) return "5m";
+  if (lookbackHours <= 48) return "15m";
+  if (lookbackHours <= 24 * 14) return "1H";
+  return "4H";
+}
+
 export async function getOhlcv(
   address: string,
   type: OhlcvInterval,

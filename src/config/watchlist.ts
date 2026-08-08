@@ -5,49 +5,43 @@ import { z } from "zod";
 import type { WatchlistConfig } from "../types/index.js";
 import { env } from "./env.js";
 
-const tokenWeightsSchema = z
-  .object({
-    technical: z.number().min(0).max(1),
-    onchain: z.number().min(0).max(1),
-    social: z.number().min(0).max(1),
-  })
-  .refine((w) => Math.abs(w.technical + w.onchain + w.social - 1) < 1e-6, {
-    message: "weights.technical + weights.onchain + weights.social must sum to 1.0",
-  });
-
 const tokenConfigSchema = z.object({
   symbol: z.string().min(1),
   address: z.string().min(32).max(44),
   enabled: z.boolean().default(true),
 
-  fibLevels: z.array(z.number().min(0).max(1)).min(1),
+  fibPivotWindow: z.number().int().positive(),
+  goldenPocketZonePct: z.number().positive(),
   swingLookbackHours: z.number().positive(),
-  confluenceZonePct: z.number().positive(),
 
-  whaleUsdThreshold: z.number().positive(),
-  volumeSpikeMultiplier: z.number().positive(),
+  minBuyUsd: z.number().positive(),
+  maxBuyPctOfLiquidity: z.number().positive().max(100),
+  minWalletAgeDays: z.number().nonnegative(),
+  minWalletPriorTrades: z.number().int().nonnegative(),
+  confirmationWindowHours: z.number().positive(),
+  minConfirmingWallets: z.number().int().min(2, "independent confirmation requires at least 2 wallets"),
 
-  twitterKeywords: z.array(z.string()).default([]),
+  atrPeriod: z.number().int().positive(),
+  stopAtrMultiplier: z.number().positive(),
 
-  weights: tokenWeightsSchema,
+  extensionRatio1: z.number().min(1),
+  extensionRatio2: z.number().min(1),
+  scaleOutPct1: z.number().positive().max(100),
+  scaleOutPct2: z.number().positive().max(100),
 
-  buyThreshold: z.number().min(-1).max(1),
-  sellThreshold: z.number().min(-1).max(1),
-
-  positionSizePct: z.number().positive().max(100),
-  stopLossPct: z.number().positive().max(100),
-  takeProfitPct: z.number().positive(),
+  timeExitHours: z.number().positive(),
 });
 
 const riskConfigSchema = z.object({
-  maxConcurrentPositions: z.number().int().positive(),
+  riskPctPerTrade: z.number().positive().max(100),
   maxPositionSizePct: z.number().positive().max(100),
   dailyLossLimitPct: z.number().positive().max(100),
+  weeklyLossLimitPct: z.number().positive().max(100),
+  consecutiveLossLimit: z.number().int().positive(),
 });
 
 const watchlistConfigSchema = z.object({
   tokens: z.array(tokenConfigSchema),
-  twitterAccounts: z.array(z.string()).default([]),
   risk: riskConfigSchema,
 });
 
@@ -70,6 +64,17 @@ export function loadWatchlistConfig(configPath: string = env.WATCHLIST_CONFIG_PA
   const duplicates = addresses.filter((a, i) => addresses.indexOf(a) !== i);
   if (duplicates.length > 0) {
     throw new Error(`Duplicate token address(es) in watchlist config: ${[...new Set(duplicates)].join(", ")}`);
+  }
+
+  for (const token of parsed.data.tokens) {
+    if (token.scaleOutPct1 + token.scaleOutPct2 >= 100) {
+      throw new Error(
+        `${token.symbol}: scaleOutPct1 + scaleOutPct2 must leave a remainder for the runner (got ${token.scaleOutPct1 + token.scaleOutPct2}%)`,
+      );
+    }
+    if (token.extensionRatio2 <= token.extensionRatio1) {
+      throw new Error(`${token.symbol}: extensionRatio2 must be greater than extensionRatio1`);
+    }
   }
 
   return parsed.data;

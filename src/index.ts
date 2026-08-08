@@ -21,7 +21,9 @@ async function main() {
   for (const token of enabledTokens) {
     console.log(`    - ${token.symbol} (${token.address})`);
   }
-  console.log(`  risk: max ${config.risk.maxConcurrentPositions} concurrent, ${config.risk.dailyLossLimitPct}% daily loss limit`);
+  console.log(
+    `  risk: ${config.risk.riskPctPerTrade}% per trade, ${config.risk.dailyLossLimitPct}% daily / ${config.risk.weeklyLossLimitPct}% weekly loss limit, ${config.risk.consecutiveLossLimit}-loss streak halt`,
+  );
   console.log(`  poll interval: ${env.POLL_INTERVAL_SECONDS}s`);
 
   if (env.liveTradingEnabled) {

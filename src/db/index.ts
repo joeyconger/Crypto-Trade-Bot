@@ -78,61 +78,108 @@ export function setLastTxSignature(tokenAddress: string, signature: string): voi
     .run(signature, tokenAddress);
 }
 
-export interface OnchainSnapshotRow {
-  liquidity_usd: number;
-  volume_24h_usd: number;
-  captured_at: string;
+// ---- wallet_activity ----
+
+export interface WalletActivityInput {
+  walletAddress: string;
+  tokenAddress: string;
+  side: "buy" | "sell";
+  usdSize: number;
+  txSignature: string;
 }
 
-export function insertOnchainSnapshot(tokenAddress: string, liquidityUsd: number, volume24hUsd: number): void {
+/** Records one observed trade. INSERT OR IGNORE tolerates re-processing the same tx (tx_signature is UNIQUE). */
+export function insertWalletActivity(input: WalletActivityInput): void {
   getDb()
-    .prepare(`INSERT INTO onchain_snapshots (token_address, liquidity_usd, volume_24h_usd) VALUES (?, ?, ?)`)
-    .run(tokenAddress, liquidityUsd, volume24hUsd);
+    .prepare(
+      `INSERT OR IGNORE INTO wallet_activity (wallet_address, token_address, side, usd_size, tx_signature)
+       VALUES (@walletAddress, @tokenAddress, @side, @usdSize, @txSignature)`,
+    )
+    .run(input);
 }
 
-export function getRecentOnchainSnapshots(tokenAddress: string, limit = 10): OnchainSnapshotRow[] {
+export interface WalletActivityRow {
+  id: number;
+  wallet_address: string;
+  token_address: string;
+  side: "buy" | "sell";
+  usd_size: number;
+  tx_signature: string;
+  observed_at: string;
+}
+
+export function getWalletActivity(walletAddress: string, limit = 50): WalletActivityRow[] {
+  return getDb()
+    .prepare(`SELECT * FROM wallet_activity WHERE wallet_address = ? ORDER BY observed_at DESC LIMIT ?`)
+    .all(walletAddress, limit) as WalletActivityRow[];
+}
+
+export function getWalletBuysForTokenSince(tokenAddress: string, sinceIso: string): WalletActivityRow[] {
   return getDb()
     .prepare(
-      `SELECT liquidity_usd, volume_24h_usd, captured_at FROM onchain_snapshots
-       WHERE token_address = ? ORDER BY captured_at DESC LIMIT ?`,
+      `SELECT * FROM wallet_activity WHERE token_address = ? AND side = 'buy' AND observed_at >= ? ORDER BY observed_at ASC`,
     )
-    .all(tokenAddress, limit) as OnchainSnapshotRow[];
+    .all(tokenAddress, sinceIso) as WalletActivityRow[];
 }
 
-export interface SignalLogInput {
-  tokenAddress: string;
-  tokenSymbol: string;
-  technicalScore: number;
-  onchainScore: number;
-  socialScore: number;
-  combinedScore: number;
-  technicalDetail: string;
-  onchainDetail: string;
-  socialDetail: string;
-  actionTaken: "none" | "buy" | "sell";
-  tradeId?: number;
-}
-
-/** Inserts one signal_log row and returns its id, for later linking to a trade. */
-export function insertSignalLog(input: SignalLogInput): number {
-  const result = getDb()
+/** Signal-reversal check: has any of these (tracked) wallets sold this token since the given time? */
+export function hasWalletSoldTokenSince(walletAddresses: string[], tokenAddress: string, sinceIso: string): boolean {
+  if (walletAddresses.length === 0) return false;
+  const placeholders = walletAddresses.map(() => "?").join(",");
+  const row = getDb()
     .prepare(
-      `INSERT INTO signal_log (
-        token_address, token_symbol, technical_score, onchain_score, social_score,
-        combined_score, technical_detail, onchain_detail, social_detail, action_taken, trade_id
-      ) VALUES (
-        @tokenAddress, @tokenSymbol, @technicalScore, @onchainScore, @socialScore,
-        @combinedScore, @technicalDetail, @onchainDetail, @socialDetail, @actionTaken, @tradeId
-      )`,
+      `SELECT COUNT(*) as n FROM wallet_activity
+       WHERE token_address = ? AND side = 'sell' AND observed_at >= ? AND wallet_address IN (${placeholders})`,
     )
-    .run({ ...input, tradeId: input.tradeId ?? null });
-
-  return Number(result.lastInsertRowid);
+    .get(tokenAddress, sinceIso, ...walletAddresses) as { n: number };
+  return row.n > 0;
 }
 
-export function attachTradeToSignalLog(signalLogId: number, tradeId: number): void {
-  getDb().prepare(`UPDATE signal_log SET trade_id = ? WHERE id = ?`).run(tradeId, signalLogId);
+// ---- wallet_reputation ----
+
+export interface WalletReputationRow {
+  wallet_address: string;
+  tag: string | null;
+  first_tx_at: string | null;
+  history_tx_count: number;
+  age_checked_at: string | null;
+  reputation_score: number;
+  updated_at: string;
 }
+
+export function getWalletReputation(walletAddress: string): WalletReputationRow | undefined {
+  return getDb().prepare(`SELECT * FROM wallet_reputation WHERE wallet_address = ?`).get(walletAddress) as
+    | WalletReputationRow
+    | undefined;
+}
+
+/** Caches the (expensive) Helius-derived age lookup and config-derived tag so we don't refetch every cycle. */
+export function upsertWalletAgeAndTag(
+  walletAddress: string,
+  firstTxAt: string | null,
+  historyTxCount: number,
+  tag: string | null,
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO wallet_reputation (wallet_address, tag, first_tx_at, history_tx_count, age_checked_at, reputation_score)
+       VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 0)
+       ON CONFLICT(wallet_address) DO UPDATE SET
+         tag = excluded.tag, first_tx_at = excluded.first_tx_at,
+         history_tx_count = excluded.history_tx_count, age_checked_at = excluded.age_checked_at`,
+    )
+    .run(walletAddress, tag, firstTxAt, historyTxCount);
+}
+
+export function updateWalletReputationScore(walletAddress: string, score: number): void {
+  getDb()
+    .prepare(
+      `UPDATE wallet_reputation SET reputation_score = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE wallet_address = ?`,
+    )
+    .run(score, walletAddress);
+}
+
+// ---- trades ----
 
 export interface TradeRow {
   id: number;
@@ -142,17 +189,78 @@ export interface TradeRow {
   side: "buy" | "sell";
   status: "open" | "closed";
   entry_price: number;
-  exit_price: number | null;
   quantity: number;
+  quantity_remaining: number;
   usd_size: number;
-  stop_loss_price: number | null;
-  take_profit_price: number | null;
+  swing_high: number;
+  swing_low: number;
+  fib_zone_level: number;
+  atr_at_entry: number;
+  extension_1272_price: number;
+  extension_1618_price: number;
+  stop_price: number;
+  scale_out_1_done: number;
+  scale_out_2_done: number;
+  runner_active: number;
+  time_exit_deadline: string;
   reason: string | null;
   tx_signature: string | null;
+  exit_price: number | null;
   pnl_usd: number | null;
   pnl_pct: number | null;
   opened_at: string;
   closed_at: string | null;
+}
+
+/**
+ * Everything about a trade that's known before it executes -- independent of
+ * whether the fill is a simulated paper price or an actual swap result.
+ * entry_price/quantity are determined by the fill mechanics (paper: current
+ * price; live: actual on-chain balance delta after slippage), so they're
+ * not part of the plan.
+ */
+export interface PlannedTradeInput {
+  tokenAddress: string;
+  tokenSymbol: string;
+  usdSize: number;
+  swingHigh: number;
+  swingLow: number;
+  fibZoneLevel: number;
+  atrAtEntry: number;
+  extension1272Price: number;
+  extension1618Price: number;
+  stopPrice: number;
+  timeExitDeadline: string;
+  reason: string;
+}
+
+export interface NewTradeInput extends PlannedTradeInput {
+  mode: "paper" | "live";
+  entryPrice: number;
+  quantity: number;
+  txSignature?: string;
+}
+
+export function insertTrade(input: NewTradeInput): number {
+  const result = getDb()
+    .prepare(
+      `INSERT INTO trades (
+        token_address, token_symbol, mode, side, status,
+        entry_price, quantity, quantity_remaining, usd_size,
+        swing_high, swing_low, fib_zone_level, atr_at_entry,
+        extension_1272_price, extension_1618_price, stop_price,
+        time_exit_deadline, reason, tx_signature
+      ) VALUES (
+        @tokenAddress, @tokenSymbol, @mode, 'buy', 'open',
+        @entryPrice, @quantity, @quantity, @usdSize,
+        @swingHigh, @swingLow, @fibZoneLevel, @atrAtEntry,
+        @extension1272Price, @extension1618Price, @stopPrice,
+        @timeExitDeadline, @reason, @txSignature
+      )`,
+    )
+    .run({ ...input, txSignature: input.txSignature ?? null });
+
+  return Number(result.lastInsertRowid);
 }
 
 export function getOpenTrades(): TradeRow[] {
@@ -170,10 +278,21 @@ export function getOpenTrade(tokenAddress: string, mode: "paper" | "live"): Trad
     .get(tokenAddress, mode) as TradeRow | undefined;
 }
 
+export function getTradeById(id: number): TradeRow | undefined {
+  return getDb().prepare(`SELECT * FROM trades WHERE id = ?`).get(id) as TradeRow | undefined;
+}
+
 export function getClosedTrades(limit = 50): TradeRow[] {
   return getDb()
     .prepare(`SELECT * FROM trades WHERE status = 'closed' ORDER BY closed_at DESC LIMIT ?`)
     .all(limit) as TradeRow[];
+}
+
+export function getRealizedPnlSince(mode: "paper" | "live", sinceIso: string): number {
+  const row = getDb()
+    .prepare(`SELECT COALESCE(SUM(pnl_usd), 0) as total FROM trades WHERE status = 'closed' AND mode = ? AND closed_at >= ?`)
+    .get(mode, sinceIso) as { total: number };
+  return row.total;
 }
 
 export function getRealizedPnlAllTime(): number {
@@ -183,25 +302,176 @@ export function getRealizedPnlAllTime(): number {
   return row.total;
 }
 
+export function updateTradeStopPrice(tradeId: number, stopPrice: number): void {
+  getDb().prepare(`UPDATE trades SET stop_price = ? WHERE id = ?`).run(stopPrice, tradeId);
+}
+
+/** Advances the runner's trailing stop and the swing-high it's measured against (used to detect "new highs"). */
+export function updateTradeTrailingStop(tradeId: number, stopPrice: number, swingHigh: number): void {
+  getDb().prepare(`UPDATE trades SET stop_price = ?, swing_high = ? WHERE id = ?`).run(stopPrice, swingHigh, tradeId);
+}
+
+export function markScaleOut1Done(tradeId: number, quantityRemaining: number): void {
+  getDb()
+    .prepare(`UPDATE trades SET scale_out_1_done = 1, quantity_remaining = ? WHERE id = ?`)
+    .run(quantityRemaining, tradeId);
+}
+
+export function markScaleOut2Done(tradeId: number, quantityRemaining: number, runnerStopPrice: number): void {
+  getDb()
+    .prepare(
+      `UPDATE trades SET scale_out_2_done = 1, runner_active = 1, quantity_remaining = ?, stop_price = ? WHERE id = ?`,
+    )
+    .run(quantityRemaining, runnerStopPrice, tradeId);
+}
+
+/** Aggregates all position_exits for a trade into its final exit_price/pnl and marks it closed. */
+export function closeTradeFully(tradeId: number): void {
+  const db = getDb();
+  const exits = db
+    .prepare(`SELECT quantity, exit_price, pnl_usd FROM position_exits WHERE trade_id = ?`)
+    .all(tradeId) as { quantity: number; exit_price: number; pnl_usd: number }[];
+  const trade = db.prepare(`SELECT usd_size FROM trades WHERE id = ?`).get(tradeId) as { usd_size: number };
+
+  const totalQuantity = exits.reduce((sum, e) => sum + e.quantity, 0);
+  const weightedExitPrice =
+    totalQuantity > 0 ? exits.reduce((sum, e) => sum + e.exit_price * e.quantity, 0) / totalQuantity : 0;
+  const totalPnlUsd = exits.reduce((sum, e) => sum + e.pnl_usd, 0);
+  const pnlPct = trade.usd_size > 0 ? (totalPnlUsd / trade.usd_size) * 100 : 0;
+
+  db.prepare(
+    `UPDATE trades
+     SET status = 'closed', quantity_remaining = 0, exit_price = ?, pnl_usd = ?, pnl_pct = ?,
+         closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE id = ?`,
+  ).run(weightedExitPrice, totalPnlUsd, pnlPct, tradeId);
+}
+
+// ---- position_exits ----
+
+export interface PositionExitInput {
+  tradeId: number;
+  tranche: "scale_1" | "scale_2" | "runner";
+  quantity: number;
+  exitPrice: number;
+  exitReason: string;
+  pnlUsd: number;
+  txSignature?: string;
+}
+
+export function insertPositionExit(input: PositionExitInput): void {
+  getDb()
+    .prepare(
+      `INSERT INTO position_exits (trade_id, tranche, quantity, exit_price, exit_reason, pnl_usd, tx_signature)
+       VALUES (@tradeId, @tranche, @quantity, @exitPrice, @exitReason, @pnlUsd, @txSignature)`,
+    )
+    .run({ ...input, txSignature: input.txSignature ?? null });
+}
+
+export interface PositionExitRow {
+  id: number;
+  trade_id: number;
+  tranche: "scale_1" | "scale_2" | "runner";
+  quantity: number;
+  exit_price: number;
+  exit_reason: string;
+  pnl_usd: number;
+  tx_signature: string | null;
+  exited_at: string;
+}
+
+export function getPositionExits(tradeId: number): PositionExitRow[] {
+  return getDb()
+    .prepare(`SELECT * FROM position_exits WHERE trade_id = ? ORDER BY exited_at ASC`)
+    .all(tradeId) as PositionExitRow[];
+}
+
+// ---- trade_signal_wallets ----
+
+export interface TradeSignalWalletInput {
+  tradeId: number;
+  walletAddress: string;
+  usdSize: number;
+  reputationScore: number;
+  walletAgeDays: number | null;
+  txSignature: string;
+}
+
+export function insertTradeSignalWallet(input: TradeSignalWalletInput): void {
+  getDb()
+    .prepare(
+      `INSERT INTO trade_signal_wallets (trade_id, wallet_address, usd_size, reputation_score, wallet_age_days, tx_signature)
+       VALUES (@tradeId, @walletAddress, @usdSize, @reputationScore, @walletAgeDays, @txSignature)`,
+    )
+    .run(input);
+}
+
+export interface TradeSignalWalletRow {
+  id: number;
+  trade_id: number;
+  wallet_address: string;
+  usd_size: number;
+  reputation_score: number;
+  wallet_age_days: number | null;
+  tx_signature: string;
+}
+
+export function getTradeSignalWallets(tradeId: number): TradeSignalWalletRow[] {
+  return getDb().prepare(`SELECT * FROM trade_signal_wallets WHERE trade_id = ?`).all(tradeId) as TradeSignalWalletRow[];
+}
+
+// ---- signal_log ----
+
+export interface SignalLogInput {
+  tokenAddress: string;
+  tokenSymbol: string;
+  onchainTriggerFired: boolean;
+  fibFilterPassed: boolean | null;
+  actionTaken: "none" | "buy" | "sell";
+  detail: string;
+  tradeId?: number;
+}
+
+export function insertSignalLog(input: SignalLogInput): number {
+  const result = getDb()
+    .prepare(
+      `INSERT INTO signal_log (token_address, token_symbol, onchain_trigger_fired, fib_filter_passed, action_taken, detail, trade_id)
+       VALUES (@tokenAddress, @tokenSymbol, @onchainTriggerFired, @fibFilterPassed, @actionTaken, @detail, @tradeId)`,
+    )
+    .run({
+      tokenAddress: input.tokenAddress,
+      tokenSymbol: input.tokenSymbol,
+      onchainTriggerFired: input.onchainTriggerFired ? 1 : 0,
+      fibFilterPassed: input.fibFilterPassed === null ? null : input.fibFilterPassed ? 1 : 0,
+      actionTaken: input.actionTaken,
+      detail: input.detail,
+      tradeId: input.tradeId ?? null,
+    });
+
+  return Number(result.lastInsertRowid);
+}
+
+export function attachTradeToSignalLog(signalLogId: number, tradeId: number): void {
+  getDb().prepare(`UPDATE signal_log SET trade_id = ? WHERE id = ?`).run(tradeId, signalLogId);
+}
+
 export interface SignalLogRow {
   id: number;
   token_address: string;
   token_symbol: string;
   evaluated_at: string;
-  technical_score: number | null;
-  onchain_score: number | null;
-  social_score: number | null;
-  combined_score: number | null;
-  technical_detail: string | null;
-  onchain_detail: string | null;
-  social_detail: string | null;
+  onchain_trigger_fired: number;
+  fib_filter_passed: number | null;
   action_taken: "none" | "buy" | "sell";
+  detail: string | null;
   trade_id: number | null;
 }
 
 export function getSignalLog(limit = 100): SignalLogRow[] {
   return getDb().prepare(`SELECT * FROM signal_log ORDER BY evaluated_at DESC LIMIT ?`).all(limit) as SignalLogRow[];
 }
+
+// ---- bot_state ----
 
 export function getBotState(): { paused: boolean } {
   const row = getDb().prepare(`SELECT paused FROM bot_state WHERE id = 1`).get() as { paused: number } | undefined;
@@ -212,4 +482,56 @@ export function setPaused(paused: boolean): void {
   getDb()
     .prepare(`UPDATE bot_state SET paused = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = 1`)
     .run(paused ? 1 : 0);
+}
+
+// ---- circuit_breaker_state ----
+
+export interface CircuitBreakerStateRow {
+  weekly_halted: number;
+  consecutive_losses: number;
+  consecutive_loss_halted: number;
+}
+
+export function getCircuitBreakerState(): CircuitBreakerStateRow {
+  return getDb()
+    .prepare(`SELECT weekly_halted, consecutive_losses, consecutive_loss_halted FROM circuit_breaker_state WHERE id = 1`)
+    .get() as CircuitBreakerStateRow;
+}
+
+export function setWeeklyHalted(halted: boolean): void {
+  getDb()
+    .prepare(
+      `UPDATE circuit_breaker_state SET weekly_halted = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = 1`,
+    )
+    .run(halted ? 1 : 0);
+}
+
+/** Increments on a loss, resets to 0 on a win/breakeven. Returns the new count -- the threshold check lives in execution/circuitBreakers.ts. */
+export function incrementOrResetConsecutiveLosses(isLoss: boolean): number {
+  const current = getCircuitBreakerState();
+  const consecutiveLosses = isLoss ? current.consecutive_losses + 1 : 0;
+  getDb()
+    .prepare(
+      `UPDATE circuit_breaker_state SET consecutive_losses = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = 1`,
+    )
+    .run(consecutiveLosses);
+  return consecutiveLosses;
+}
+
+export function setConsecutiveLossHalted(halted: boolean): void {
+  getDb()
+    .prepare(
+      `UPDATE circuit_breaker_state SET consecutive_loss_halted = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = 1`,
+    )
+    .run(halted ? 1 : 0);
+}
+
+export function resumeConsecutiveLossHalt(): void {
+  getDb()
+    .prepare(
+      `UPDATE circuit_breaker_state
+       SET consecutive_loss_halted = 0, consecutive_losses = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE id = 1`,
+    )
+    .run();
 }

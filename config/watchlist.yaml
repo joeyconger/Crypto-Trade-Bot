@@ -1,76 +1,72 @@
 # Vibes & Fibs watchlist
 #
 # Each token gets its own strategy parameters. Add/remove tokens here without
-# touching any code — the bot reloads this file at the start of each poll cycle.
+# touching any code -- the bot reloads this file at the start of each poll cycle.
+#
+# Entry logic: the on-chain trigger (wallet buy confirmation) is the ONLY
+# thing that can fire a trade. The fib filter below only narrows timing after
+# that fires -- it never triggers a trade on its own.
 tokens:
   - symbol: BONK
     address: DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263
     enabled: true
 
-    # --- technical (fib + support/resistance) ---
-    fibLevels: [0.236, 0.382, 0.5, 0.618, 0.786]
-    swingLookbackHours: 72
-    confluenceZonePct: 1.5 # price must be within this % of a fib level to count as "at" it
+    # --- fib filter (evaluated only after the on-chain trigger fires) ---
+    fibPivotWindow: 5 # candles required on each side to confirm a swing pivot
+    goldenPocketZonePct: 1 # price must be within this % of the 0.5/0.618 retracement
+    swingLookbackHours: 72 # how much price history to pull for pivot detection
 
-    # --- on-chain ---
-    whaleUsdThreshold: 25000 # single tx size that counts as a "whale" move
-    volumeSpikeMultiplier: 3 # current volume vs rolling average that counts as a spike
+    # --- on-chain entry trigger ---
+    minBuyUsd: 5000
+    maxBuyPctOfLiquidity: 3 # buys above this % of pool liquidity are treated as manipulation risk, not conviction
+    minWalletAgeDays: 14
+    minWalletPriorTrades: 1 # "prior trade history" -- at least this many txs found in the wallet's own history
+    confirmationWindowHours: 4
+    minConfirmingWallets: 2 # one whale alone never triggers
 
-    # --- social ---
-    # Twitter accounts (handles, no @) whose tweets mentioning this token's
-    # symbol/name feed the social signal. Shared list can also be set globally
-    # in twitterAccounts below; per-token list is additive.
-    # NOTE: social signal is disabled in v1 (see README) -- always scores 0.
-    # weights.social is 0 below so it doesn't drag the combined score toward
-    # zero; bump it back up once Twitter/X integration is wired in.
-    twitterKeywords: [BONK, "$BONK"]
+    # --- ATR-based stop ---
+    atrPeriod: 14
+    stopAtrMultiplier: 1 # initial stop = swing low - (this x ATR)
 
-    # --- signal weights (must sum to 1.0 across the three signals) ---
-    weights:
-      technical: 0.6
-      onchain: 0.4
-      social: 0
+    # --- scaled take-profit ---
+    extensionRatio1: 1.272
+    extensionRatio2: 1.618
+    scaleOutPct1: 33 # closed at extensionRatio1
+    scaleOutPct2: 33 # closed at extensionRatio2 -- remainder (34%) is the uncapped runner
 
-    # --- combined score thresholds, range [-1, 1] ---
-    buyThreshold: 0.6
-    sellThreshold: -0.6
-
-    # --- position sizing & risk ---
-    positionSizePct: 5 # % of trading bankroll per position
-    stopLossPct: 8
-    takeProfitPct: 20
+    # --- time-based exit (unscaled portion only -- ignored once scaleOutPct1 has fired) ---
+    timeExitHours: 48
 
   - symbol: WIF
     address: EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm
     enabled: true
 
-    fibLevels: [0.236, 0.382, 0.5, 0.618, 0.786]
+    fibPivotWindow: 5
+    goldenPocketZonePct: 1
     swingLookbackHours: 72
-    confluenceZonePct: 1.5
 
-    whaleUsdThreshold: 25000
-    volumeSpikeMultiplier: 3
+    minBuyUsd: 5000
+    maxBuyPctOfLiquidity: 3
+    minWalletAgeDays: 14
+    minWalletPriorTrades: 1
+    confirmationWindowHours: 4
+    minConfirmingWallets: 2
 
-    twitterKeywords: [WIF, "$WIF", dogwifhat]
+    atrPeriod: 14
+    stopAtrMultiplier: 1
 
-    weights:
-      technical: 0.6
-      onchain: 0.4
-      social: 0
+    extensionRatio1: 1.272
+    extensionRatio2: 1.618
+    scaleOutPct1: 33
+    scaleOutPct2: 33
 
-    buyThreshold: 0.6
-    sellThreshold: -0.6
+    timeExitHours: 48
 
-    positionSizePct: 5
-    stopLossPct: 8
-    takeProfitPct: 20
-
-# Fixed watchlist of Twitter/X accounts to poll for social signal (handles, no @).
-# Fill this in with the accounts you want tracked.
-twitterAccounts: []
-
-# Global risk management (applies across all tokens/positions).
+# Account-level risk management -- applies across all tokens/positions.
+# No cap on concurrent open positions by design.
 risk:
-  maxConcurrentPositions: 5
-  maxPositionSizePct: 10 # hard ceiling, overrides any per-token positionSizePct above it
-  dailyLossLimitPct: 10 # halt all trading for the day if realized+unrealized loss exceeds this % of bankroll
+  riskPctPerTrade: 1 # % of account risked per trade; position size = (account x this%) / (entry - stop)
+  maxPositionSizePct: 10 # hard ceiling on any single position, regardless of stop distance
+  dailyLossLimitPct: 3 # halt new entries for the rest of the UTC day
+  weeklyLossLimitPct: 8 # halt entirely -- sticky, no auto-resume, needs manual review
+  consecutiveLossLimit: 4 # halt entirely after this many losses in a row -- sticky, no auto-resume

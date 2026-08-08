@@ -1,11 +1,19 @@
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { getDb, type TradeRow } from "../db/index.js";
+import {
+  insertTrade,
+  insertPositionExit,
+  markScaleOut1Done,
+  markScaleOut2Done,
+  closeTradeFully,
+  type TradeRow,
+  type PlannedTradeInput,
+} from "../db/index.js";
 import { getTokenOverview } from "../data/birdeye.js";
 import { getConnection } from "../solana/connection.js";
 import { getBotKeypair } from "../solana/keypair.js";
 import { getTokenBalanceRaw } from "../solana/tokenAccounts.js";
 import { swapSolForToken, swapTokenForSol, SOL_MINT } from "./jupiter.js";
-import type { TokenConfig } from "../types/index.js";
+import { computeTrancheQuantities } from "./positionSizing.js";
 
 const FEE_RESERVE_SOL = 0.01;
 
@@ -27,67 +35,119 @@ export async function getBotWalletBalanceUsd(): Promise<number> {
  * balance delta (not the quote's outAmount/decimals) so it's correct
  * regardless of any pre-existing dust in the wallet.
  */
-export async function openLivePosition(token: TokenConfig, usdSize: number, reason: string): Promise<number> {
+export async function openLivePosition(plan: PlannedTradeInput): Promise<number> {
   const solOverview = await getTokenOverview(SOL_MINT);
-  const solAmount = usdSize / solOverview.price;
+  const solAmount = plan.usdSize / solOverview.price;
 
   const solBalance = await getBotSolBalance();
   if (solAmount + FEE_RESERVE_SOL > solBalance) {
     throw new Error(
-      `Insufficient SOL balance for ${token.symbol}: need ~${solAmount.toFixed(4)} + ${FEE_RESERVE_SOL} fee reserve, have ${solBalance.toFixed(4)}`,
+      `Insufficient SOL balance for ${plan.tokenSymbol}: need ~${solAmount.toFixed(4)} + ${FEE_RESERVE_SOL} fee reserve, have ${solBalance.toFixed(4)}`,
     );
   }
 
-  const before = await getTokenBalanceRaw(token.address);
-  const result = await swapSolForToken(token.address, solAmount);
-  const after = await getTokenBalanceRaw(token.address);
+  const before = await getTokenBalanceRaw(plan.tokenAddress);
+  const result = await swapSolForToken(plan.tokenAddress, solAmount);
+  const after = await getTokenBalanceRaw(plan.tokenAddress);
 
   const quantity = (after?.uiAmount ?? 0) - (before?.uiAmount ?? 0);
   if (quantity <= 0) {
-    throw new Error(`Swap ${result.signature} confirmed but ${token.symbol} balance didn't increase`);
+    throw new Error(`Swap ${result.signature} confirmed but ${plan.tokenSymbol} balance didn't increase`);
   }
 
-  const entryPrice = usdSize / quantity;
-  const stopLossPrice = entryPrice * (1 - token.stopLossPct / 100);
-  const takeProfitPrice = entryPrice * (1 + token.takeProfitPct / 100);
+  const entryPrice = plan.usdSize / quantity;
 
-  const insert = getDb()
-    .prepare(
-      `INSERT INTO trades (
-        token_address, token_symbol, mode, side, status,
-        entry_price, quantity, usd_size, stop_loss_price, take_profit_price, reason, tx_signature
-      ) VALUES (?, ?, 'live', 'buy', 'open', ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(token.address, token.symbol, entryPrice, quantity, usdSize, stopLossPrice, takeProfitPrice, reason, result.signature);
-
-  return Number(insert.lastInsertRowid);
+  return insertTrade({ ...plan, mode: "live", entryPrice, quantity, txSignature: result.signature });
 }
 
-/** Sells the wallet's full on-chain balance of the token back to SOL and closes the trade row. */
-export async function closeLivePosition(trade: TradeRow, exitReason: string): Promise<void> {
+/**
+ * Sells a specific target quantity by computing what fraction of the
+ * wallet's CURRENT on-chain balance that represents, then selling that
+ * fraction of the actual raw amount -- avoids drift between our recorded
+ * quantity and on-chain reality across multiple partial exits. The fraction
+ * itself goes through floating point (harmless -- a 33%-ish tranche doesn't
+ * need more than a few decimal places of precision); the raw amount stays in
+ * BigInt throughout so large token supplies never lose integer precision.
+ */
+async function sellFractionOfBalance(
+  tokenAddress: string,
+  targetQuantity: number,
+): Promise<{ signature: string; quantitySold: number; usdReceived: number }> {
+  const balance = await getTokenBalanceRaw(tokenAddress);
+  if (!balance || balance.uiAmount <= 0) {
+    throw new Error(`No on-chain balance found for ${tokenAddress}`);
+  }
+
+  const fraction = Math.min(1, targetQuantity / balance.uiAmount);
+  const fractionBps = BigInt(Math.round(fraction * 10_000));
+  const rawAmountToSell = ((BigInt(balance.amountRaw) * fractionBps) / 10_000n).toString();
+
+  const result = await swapTokenForSol(tokenAddress, rawAmountToSell);
+  const solOverview = await getTokenOverview(SOL_MINT);
+  const solReceived = Number(result.outAmount) / LAMPORTS_PER_SOL;
+
+  return { signature: result.signature, quantitySold: balance.uiAmount * fraction, usdReceived: solReceived * solOverview.price };
+}
+
+/** The 33% (configurable) partial exit at an extension target. Trade stays open -- quantity_remaining just drops. */
+export async function executeLiveScaleOut(
+  trade: TradeRow,
+  tranche: "scale_1" | "scale_2",
+  exitReason: string,
+  scaleOutPct1: number,
+  scaleOutPct2: number,
+): Promise<void> {
+  const { scale1Qty, scale2Qty } = computeTrancheQuantities(trade.quantity, scaleOutPct1, scaleOutPct2);
+  const targetQty = tranche === "scale_1" ? scale1Qty : scale2Qty;
+
+  const { signature, quantitySold, usdReceived } = await sellFractionOfBalance(trade.token_address, targetQty);
+  const exitPrice = quantitySold > 0 ? usdReceived / quantitySold : 0;
+  const pnlUsd = usdReceived - quantitySold * trade.entry_price;
+
+  insertPositionExit({
+    tradeId: trade.id,
+    tranche,
+    quantity: quantitySold,
+    exitPrice,
+    exitReason,
+    pnlUsd,
+    txSignature: signature,
+  });
+
+  if (tranche === "scale_1") {
+    markScaleOut1Done(trade.id, trade.quantity_remaining - quantitySold);
+  } else {
+    markScaleOut2Done(trade.id, trade.quantity_remaining - quantitySold, trade.entry_price); // moves stop to breakeven, activates the runner
+  }
+}
+
+/**
+ * Sells the wallet's full remaining on-chain balance of the token, for any
+ * reason other than hitting an extension target -- logged as the 'runner'
+ * tranche whether it's actually the trailing runner or the full original
+ * position closing before any scale-out ever fired.
+ */
+export async function closeLivePositionRemainder(trade: TradeRow, exitReason: string): Promise<void> {
   const balance = await getTokenBalanceRaw(trade.token_address);
   if (!balance || balance.amountRaw === "0") {
     throw new Error(`No on-chain balance found for ${trade.token_symbol} -- cannot close live position #${trade.id}`);
   }
 
   const result = await swapTokenForSol(trade.token_address, balance.amountRaw);
-
   const solOverview = await getTokenOverview(SOL_MINT);
   const solReceived = Number(result.outAmount) / LAMPORTS_PER_SOL;
   const usdReceived = solReceived * solOverview.price;
+  const quantitySold = balance.uiAmount;
+  const exitPrice = quantitySold > 0 ? usdReceived / quantitySold : 0;
 
-  const exitPrice = usdReceived / trade.quantity;
-  const pnlUsd = usdReceived - trade.usd_size;
-  const pnlPct = (pnlUsd / trade.usd_size) * 100;
-
-  getDb()
-    .prepare(
-      `UPDATE trades
-       SET status = 'closed', exit_price = ?, pnl_usd = ?, pnl_pct = ?,
-           closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-           reason = reason || ' | exit: ' || ?,
-           tx_signature = tx_signature || ' -> ' || ?
-       WHERE id = ?`,
-    )
-    .run(exitPrice, pnlUsd, pnlPct, exitReason, result.signature, trade.id);
+  insertPositionExit({
+    tradeId: trade.id,
+    tranche: "runner",
+    quantity: quantitySold,
+    exitPrice,
+    exitReason,
+    pnlUsd: usdReceived - quantitySold * trade.entry_price,
+    txSignature: result.signature,
+  });
+  closeTradeFully(trade.id);
 }

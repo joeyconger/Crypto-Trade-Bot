@@ -1,35 +1,67 @@
-import { getDb, type TradeRow } from "../db/index.js";
-import type { TokenConfig } from "../types/index.js";
+import {
+  insertTrade,
+  insertPositionExit,
+  markScaleOut1Done,
+  markScaleOut2Done,
+  closeTradeFully,
+  type TradeRow,
+  type PlannedTradeInput,
+} from "../db/index.js";
+import { computeTrancheQuantities } from "./positionSizing.js";
 
-/** Simulates a fill at the current price -- no real transaction, paper mode only. */
-export function openPaperPosition(token: TokenConfig, currentPrice: number, usdSize: number, reason: string): number {
-  const quantity = usdSize / currentPrice;
-  const stopLossPrice = currentPrice * (1 - token.stopLossPct / 100);
-  const takeProfitPrice = currentPrice * (1 + token.takeProfitPct / 100);
-
-  const result = getDb()
-    .prepare(
-      `INSERT INTO trades (
-        token_address, token_symbol, mode, side, status,
-        entry_price, quantity, usd_size, stop_loss_price, take_profit_price, reason
-      ) VALUES (?, ?, 'paper', 'buy', 'open', ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(token.address, token.symbol, currentPrice, quantity, usdSize, stopLossPrice, takeProfitPrice, reason);
-
-  return Number(result.lastInsertRowid);
+function pnlFor(quantity: number, entryPrice: number, exitPrice: number): number {
+  return (exitPrice - entryPrice) * quantity;
 }
 
-export function closePaperPosition(trade: TradeRow, exitPrice: number, exitReason: string): void {
-  const pnlUsd = (exitPrice - trade.entry_price) * trade.quantity;
-  const pnlPct = (pnlUsd / trade.usd_size) * 100;
+/** Simulates a fill at the current price -- no real transaction, paper mode only. */
+export function openPaperPosition(plan: PlannedTradeInput, currentPrice: number): number {
+  const quantity = plan.usdSize / currentPrice;
+  return insertTrade({ ...plan, mode: "paper", entryPrice: currentPrice, quantity });
+}
 
-  getDb()
-    .prepare(
-      `UPDATE trades
-       SET status = 'closed', exit_price = ?, pnl_usd = ?, pnl_pct = ?,
-           closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-           reason = reason || ' | exit: ' || ?
-       WHERE id = ?`,
-    )
-    .run(exitPrice, pnlUsd, pnlPct, exitReason, trade.id);
+/** The 33% (configurable) partial exit at an extension target. Trade stays open -- quantity_remaining just drops. */
+export function executePaperScaleOut(
+  trade: TradeRow,
+  tranche: "scale_1" | "scale_2",
+  exitPrice: number,
+  exitReason: string,
+  scaleOutPct1: number,
+  scaleOutPct2: number,
+): void {
+  const { scale1Qty, scale2Qty } = computeTrancheQuantities(trade.quantity, scaleOutPct1, scaleOutPct2);
+  const qty = tranche === "scale_1" ? scale1Qty : scale2Qty;
+
+  insertPositionExit({
+    tradeId: trade.id,
+    tranche,
+    quantity: qty,
+    exitPrice,
+    exitReason,
+    pnlUsd: pnlFor(qty, trade.entry_price, exitPrice),
+  });
+
+  if (tranche === "scale_1") {
+    markScaleOut1Done(trade.id, trade.quantity_remaining - qty);
+  } else {
+    markScaleOut2Done(trade.id, trade.quantity_remaining - qty, trade.entry_price); // moves stop to breakeven, activates the runner
+  }
+}
+
+/**
+ * Closes whatever quantity is still open, for any reason other than hitting
+ * an extension target (stop loss, trailing stop, time exit, signal reversal)
+ * -- logged as the 'runner' tranche whether it's actually the trailing
+ * runner or the full original position closing before any scale-out ever fired.
+ */
+export function closePaperPositionRemainder(trade: TradeRow, exitPrice: number, exitReason: string): void {
+  const qty = trade.quantity_remaining;
+  insertPositionExit({
+    tradeId: trade.id,
+    tranche: "runner",
+    quantity: qty,
+    exitPrice,
+    exitReason,
+    pnlUsd: pnlFor(qty, trade.entry_price, exitPrice),
+  });
+  closeTradeFully(trade.id);
 }
