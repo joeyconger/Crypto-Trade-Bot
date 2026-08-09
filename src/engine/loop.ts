@@ -1,15 +1,17 @@
 import { env } from "../config/env.js";
 import { loadWatchlistConfig } from "../config/watchlist.js";
 import {
-  syncWatchlistTokens,
   getBotState,
   getOpenTrade,
   getTradeById,
   insertSignalLog,
   insertTradeSignalWallet,
+  getLastTechnicalEvalAtMap,
+  setLastTechnicalEvalAt,
   type TradeRow,
 } from "../db/index.js";
-import { getTokenOverview, getOhlcv, pickOhlcvInterval, type OhlcvCandle } from "../data/birdeye.js";
+import { resolveWatchlistTokens } from "./watchlistSource.js";
+import { getTokenOverview, getMultiPrice, getOhlcv, pickOhlcvInterval, type OhlcvCandle } from "../data/birdeye.js";
 import { pollWalletActivity } from "../onchain/walletActivity.js";
 import { evaluateEntryTrigger } from "../onchain/entryTrigger.js";
 import { evaluateTechnicalTrigger } from "../signals/technicalTrigger.js";
@@ -91,7 +93,6 @@ async function considerNewEntry(
   token: TokenConfig,
   config: WatchlistConfig,
   currentPrice: number,
-  liquidityUsd: number,
   mode: Mode,
 ): Promise<void> {
   const candles = await fetchCandles(token);
@@ -127,10 +128,14 @@ async function considerNewEntry(
     return;
   }
 
-  // Optional on-chain confluence -- never blocks the entry, including on error.
+  // Optional on-chain confluence -- never blocks the entry, including on
+  // error. Liquidity is only fetched here, lazily, for tokens that already
+  // cleared the technical gate -- not upfront for the whole watchlist every
+  // cycle, since it's otherwise unused.
   let confirmingWallets: Awaited<ReturnType<typeof evaluateEntryTrigger>>["confirmingWallets"] = [];
   try {
-    const onchain = await evaluateEntryTrigger(token, liquidityUsd);
+    const overview = await getTokenOverview(token.address);
+    const onchain = await evaluateEntryTrigger(token, overview.liquidityUsd);
     if (onchain.fired) confirmingWallets = onchain.confirmingWallets;
   } catch (err) {
     console.error(`[${token.symbol}] on-chain confluence check failed (non-blocking):`, err instanceof Error ? err.message : err);
@@ -222,29 +227,56 @@ async function considerNewEntry(
   });
 }
 
-async function evaluateAndActOnToken(token: TokenConfig, config: WatchlistConfig, mode: Mode): Promise<void> {
-  const overview = await getTokenOverview(token.address);
-
+async function evaluateAndActOnToken(
+  token: TokenConfig,
+  config: WatchlistConfig,
+  mode: Mode,
+  currentPrice: number,
+): Promise<void> {
   // Record all observed wallet activity first -- feeds both on-chain
   // confluence and the wallet reputation that improves as the bot runs.
-  await pollWalletActivity(token, overview.price);
+  await pollWalletActivity(token, currentPrice);
 
   const openTrade = getOpenTrade(token.address, mode);
 
   if (openTrade) {
-    await manageOpenPosition(token, config, openTrade, overview.price, mode);
+    await manageOpenPosition(token, config, openTrade, currentPrice, mode);
   } else {
-    await considerNewEntry(token, config, overview.price, overview.liquidityUsd, mode);
+    await considerNewEntry(token, config, currentPrice, mode);
   }
 }
 
 // Gap between tokens within a cycle -- each token evaluation makes multiple
 // Birdeye calls, and back-to-back tokens with no gap is an easy way to hit
 // the free tier's per-second rate limit on the second-plus token every cycle.
-const TOKEN_STAGGER_MS = 1500;
+export const TOKEN_STAGGER_MS = 1500;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Which tokens actually get evaluated this cycle: any token with an open
+ * position (managed every cycle -- stop/trailing tracking needs to stay
+ * current) plus any token whose technicalRefreshIntervalMinutes has elapsed
+ * since its last technical-trigger evaluation. Everything else is skipped
+ * entirely -- no Birdeye/Helius calls at all -- which is what keeps a
+ * 100-token dynamic watchlist's API cost bounded independent of how often
+ * this cycle itself runs.
+ */
+function selectDueTokens(tokens: TokenConfig[], mode: Mode): TokenConfig[] {
+  const lastEvalMap = getLastTechnicalEvalAtMap();
+  const now = Date.now();
+
+  return tokens.filter((token) => {
+    if (getOpenTrade(token.address, mode)) return true;
+
+    const lastEvalAt = lastEvalMap.get(token.address);
+    if (!lastEvalAt) return true;
+
+    const dueAt = new Date(lastEvalAt).getTime() + token.technicalRefreshIntervalMinutes * 60 * 1000;
+    return now >= dueAt;
+  });
 }
 
 export async function runPollCycle(): Promise<void> {
@@ -254,16 +286,33 @@ export async function runPollCycle(): Promise<void> {
   }
 
   const config = loadWatchlistConfig();
-  syncWatchlistTokens(config);
   const mode: Mode = env.liveTradingEnabled ? "live" : "paper";
 
-  const enabledTokens = config.tokens.filter((t) => t.enabled);
-  for (let i = 0; i < enabledTokens.length; i++) {
-    const token = enabledTokens[i];
+  const allTokens = await resolveWatchlistTokens(config);
+  const dueTokens = selectDueTokens(allTokens, mode);
+  if (dueTokens.length === 0) return;
+
+  const priceMap = await getMultiPrice(dueTokens.map((t) => t.address)).catch((err) => {
+    console.error("Batched price fetch failed, falling back to per-token lookups:", err instanceof Error ? err.message : err);
+    return new Map<string, number>();
+  });
+
+  for (let i = 0; i < dueTokens.length; i++) {
+    const token = dueTokens[i];
     if (i > 0) await sleep(TOKEN_STAGGER_MS);
 
     try {
-      await evaluateAndActOnToken(token, config, mode);
+      const currentPrice = priceMap.get(token.address) ?? (await getTokenOverview(token.address)).price;
+      const hadOpenTrade = !!getOpenTrade(token.address, mode);
+
+      await evaluateAndActOnToken(token, config, mode, currentPrice);
+
+      // Only stamp the throttle for tokens evaluated because they were DUE,
+      // not ones swept in because they had an open position -- an open
+      // position's presence in this cycle isn't a technical re-evaluation.
+      if (!hadOpenTrade) {
+        setLastTechnicalEvalAt(token.address, new Date().toISOString());
+      }
     } catch (err) {
       // A failed evaluation (rate limit, network blip, etc.) still gets a
       // signal_log row -- otherwise the token just silently vanishes from
@@ -282,10 +331,38 @@ export async function runPollCycle(): Promise<void> {
   }
 }
 
-export function startPollLoop(intervalSeconds: number): NodeJS.Timeout {
-  console.log(`Starting poll loop (every ${intervalSeconds}s)`);
-  runPollCycle().catch((err) => console.error("Poll cycle failed:", err));
-  return setInterval(() => {
-    runPollCycle().catch((err) => console.error("Poll cycle failed:", err));
-  }, intervalSeconds * 1000);
+/**
+ * Self-rescheduling, not setInterval: a cycle only starts intervalSeconds
+ * after the PREVIOUS one finished, never before. With a couple of tokens
+ * this never mattered (a cycle takes seconds); with a large watchlist,
+ * setInterval would happily fire the next cycle before the current one
+ * finishes, compounding the API load this is already tight on.
+ */
+export function startPollLoop(intervalSeconds: number): { stop: () => void } {
+  console.log(`Starting poll loop (every ${intervalSeconds}s, tokens staggered ${TOKEN_STAGGER_MS}ms apart within a cycle)`);
+  let stopped = false;
+  let timer: NodeJS.Timeout | undefined;
+
+  const tick = async () => {
+    const startedAt = Date.now();
+    try {
+      await runPollCycle();
+    } catch (err) {
+      console.error("Poll cycle failed:", err);
+    }
+    if (stopped) return;
+
+    const elapsedMs = Date.now() - startedAt;
+    const delayMs = Math.max(0, intervalSeconds * 1000 - elapsedMs);
+    timer = setTimeout(tick, delayMs);
+  };
+
+  tick();
+
+  return {
+    stop: () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    },
+  };
 }

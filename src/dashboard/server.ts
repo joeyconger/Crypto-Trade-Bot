@@ -14,6 +14,8 @@ import {
   getPositionExits,
   getTradeSignalWallets,
   getCircuitBreakerState,
+  getWatchlistTokensFromDb,
+  getWatchlistLastRefreshedAt,
 } from "../db/index.js";
 import { checkCircuitBreakers, resumeWeeklyHalt, resumeConsecutiveLossHalt } from "../execution/circuitBreakers.js";
 import { getTokenOverview } from "../data/birdeye.js";
@@ -66,8 +68,18 @@ export function createDashboardServer() {
 
   app.get("/api/status", async (_req, res) => {
     const config = loadWatchlistConfig();
-    const enabledTokens = config.tokens.filter((t) => t.enabled);
     const { mode, bankrollUsd } = await resolveMode();
+
+    // In top_traded mode the real watchlist is whatever the poll loop last
+    // resolved into the DB (up to topTradedCount dynamic picks + pins), not
+    // the static config.tokens list -- that's just the pins.
+    const watchlist =
+      config.watchlistSource.mode === "top_traded"
+        ? (() => {
+            const count = getWatchlistTokensFromDb().length;
+            return { enabled: count, total: count, lastRefreshedAt: getWatchlistLastRefreshedAt() ?? null };
+          })()
+        : { enabled: config.tokens.filter((t) => t.enabled).length, total: config.tokens.length };
 
     const runState = computeRunState(mode, config.risk, bankrollUsd);
     const cbState = getCircuitBreakerState();
@@ -79,7 +91,7 @@ export function createDashboardServer() {
       mode,
       runState,
       pollIntervalSeconds: env.POLL_INTERVAL_SECONDS,
-      watchlist: { enabled: enabledTokens.length, total: config.tokens.length },
+      watchlist,
       openPositionsCount: getOpenTrades().filter((t) => t.mode === mode).length,
       risk: {
         riskPctPerTrade: config.risk.riskPctPerTrade,

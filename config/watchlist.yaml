@@ -8,6 +8,60 @@
 # all required, no big wallet needed. On-chain wallet confirmation is
 # evaluated too, but purely as optional confluence: logged against the trade
 # and folded into its reason when present, never required to fire an entry.
+
+# "top_traded": trade the top topTradedCount tokens by 24h volume from
+# Birdeye, re-selected every refreshIntervalHours, each using the
+# defaultStrategy below (100 tokens can't realistically get individually
+# hand-tuned params). The `tokens` list below still rides along as an
+# always-included pin list on top of this. Switch mode to "static" to trade
+# only the pinned `tokens` list and ignore topTradedCount entirely.
+watchlistSource:
+  mode: top_traded
+  topTradedCount: 100
+  refreshIntervalHours: 24
+  minLiquidityUsd: 50000
+
+# Shared strategy for the dynamic top-100 selection. Same params as the
+# pinned BONK/WIF below, except technicalRefreshIntervalMinutes: with 100
+# tokens, scanning each one on every poll cycle would blow past Birdeye's
+# free-tier budget fast -- see engine/loop.ts's due-token throttle. 240 (4h)
+# keeps ~100 tokens at roughly 20k Birdeye calls/month; tighten it if your
+# actual usage (check the Birdeye dashboard after a day or two) has headroom,
+# or loosen it if it doesn't.
+defaultStrategy:
+  fibPivotWindow: 3
+  goldenPocketZonePct: 2.5
+  swingLookbackHours: 96
+
+  trendSmaPeriod: 20
+  chopLookbackPeriods: 15
+  chopMaxCrossings: 6
+
+  rsiPeriod: 14
+  rsiMidline: 60
+  rsiOverboughtCeiling: 78
+
+  volumeAvgPeriod: 15
+  volumeConfirmationMultiplier: 1.2
+
+  minBuyUsd: 5000
+  maxBuyPctOfLiquidity: 3
+  minWalletAgeDays: 14
+  minWalletPriorTrades: 1
+  confirmationWindowHours: 4
+  minConfirmingWallets: 2
+
+  atrPeriod: 14
+  stopAtrMultiplier: 1
+
+  extensionRatio1: 1.272
+  extensionRatio2: 1.618
+  scaleOutPct1: 33
+  scaleOutPct2: 33
+
+  timeExitHours: 48
+  technicalRefreshIntervalMinutes: 240
+
 tokens:
   - symbol: BONK
     address: DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263
@@ -56,6 +110,10 @@ tokens:
     # --- time-based exit (unscaled portion only -- ignored once scaleOutPct1 has fired) ---
     timeExitHours: 48
 
+    # Pinned tokens are few enough that hourly technical scans cost nothing
+    # meaningful against the Birdeye budget -- keep them responsive.
+    technicalRefreshIntervalMinutes: 60
+
   - symbol: WIF
     address: EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm
     enabled: true
@@ -91,6 +149,7 @@ tokens:
     scaleOutPct2: 33
 
     timeExitHours: 48
+    technicalRefreshIntervalMinutes: 60
 
 # Account-level risk management -- applies across all tokens/positions.
 # No cap on concurrent open positions by design.

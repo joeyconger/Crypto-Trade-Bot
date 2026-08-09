@@ -1,8 +1,5 @@
-export interface TokenConfig {
-  symbol: string;
-  address: string;
-  enabled: boolean;
-
+/** The shared strategy parameters -- everything about HOW to trade a token, independent of WHICH token. */
+export interface StrategyConfig {
   // Technical trigger -- the entry gate. Fires on trend + fib/structural
   // confluence + RSI momentum + volume + confirmed candle close, with no
   // on-chain confirmation required.
@@ -44,6 +41,20 @@ export interface TokenConfig {
 
   // time-based exit, unscaled portion only
   timeExitHours: number;
+
+  // Minimum gap between technical-trigger evaluations (OHLCV fetch + fib/
+  // RSI/volume/close checks) for a token with no open position. Keeps a
+  // large watchlist's API cost bounded independent of poll interval -- a
+  // position that IS open is always managed every cycle regardless of this,
+  // since stop/trailing tracking needs to stay current.
+  technicalRefreshIntervalMinutes: number;
+}
+
+/** WHICH token, plus its strategy -- dynamically-selected tokens get the shared defaultStrategy merged in. */
+export interface TokenConfig extends StrategyConfig {
+  symbol: string;
+  address: string;
+  enabled: boolean;
 }
 
 export interface RiskConfig {
@@ -54,7 +65,23 @@ export interface RiskConfig {
   consecutiveLossLimit: number; // halt entirely, sticky until manually resumed
 }
 
+/**
+ * "static": trade exactly the tokens listed in `tokens`, hand-tuned per token.
+ * "top_traded": trade the top `topTradedCount` tokens by 24h volume from
+ * Birdeye, re-selected every `refreshIntervalHours`, each using
+ * `defaultStrategy` (100 tokens can't realistically get individually hand-tuned
+ * params) -- `tokens` still works alongside this as an always-included pin list.
+ */
+export interface WatchlistSourceConfig {
+  mode: "static" | "top_traded";
+  topTradedCount: number;
+  refreshIntervalHours: number;
+  minLiquidityUsd: number; // filters out illiquid/likely-wash-traded tokens even if volume ranks them highly
+}
+
 export interface WatchlistConfig {
   tokens: TokenConfig[];
   risk: RiskConfig;
+  watchlistSource: WatchlistSourceConfig;
+  defaultStrategy: StrategyConfig;
 }

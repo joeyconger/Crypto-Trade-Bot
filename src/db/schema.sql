@@ -11,6 +11,11 @@ CREATE TABLE IF NOT EXISTS watchlist_tokens (
   -- most recent Helius tx signature already recorded, so each poll only
   -- looks at new ones.
   last_tx_signature TEXT,
+  -- Last time this token's technical trigger (OHLCV fetch + fib/RSI/volume/
+  -- close checks) was evaluated while it had no open position. NULL means
+  -- never -- immediately due. Not touched while a position is open (those
+  -- are managed every cycle regardless); see engine/loop.ts.
+  last_technical_eval_at TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -147,6 +152,9 @@ CREATE INDEX IF NOT EXISTS idx_signal_log_evaluated_at ON signal_log (evaluated_
 CREATE TABLE IF NOT EXISTS bot_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   paused INTEGER NOT NULL DEFAULT 0,
+  -- Last time the dynamic (top_traded) watchlist was re-selected from
+  -- Birdeye. NULL means never -- the first poll cycle always refreshes.
+  watchlist_last_refreshed_at TEXT,
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

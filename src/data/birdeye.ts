@@ -99,3 +99,86 @@ export async function getTokenOverview(address: string): Promise<TokenOverview> 
     priceChange24hPct: Number(data?.priceChange24hPercent ?? 0),
   };
 }
+
+// Birdeye's multi_price endpoint accepts a comma-separated address list --
+// chunked the same way as tokenlist pagination, at a conservative page size.
+const MULTI_PRICE_CHUNK_SIZE = 100;
+
+/**
+ * Batched current-price lookup for many tokens in one or a few Birdeye calls,
+ * replacing a per-token /defi/token_overview call just to get price. Field
+ * shape (`data[address].value`) is my best understanding of Birdeye's
+ * documented /defi/multi_price response and, like getTopTradedTokens, is
+ * unverified from this sandbox (no live network access) -- check the raw
+ * response on the first live run if this comes back empty. Addresses with no
+ * price in the response (delisted, no liquidity, etc.) are simply absent from
+ * the returned map -- callers should fall back to getTokenOverview for those.
+ */
+export async function getMultiPrice(addresses: string[]): Promise<Map<string, number>> {
+  const prices = new Map<string, number>();
+  if (addresses.length === 0) return prices;
+
+  for (let i = 0; i < addresses.length; i += MULTI_PRICE_CHUNK_SIZE) {
+    const chunk = addresses.slice(i, i + MULTI_PRICE_CHUNK_SIZE);
+    const data = await birdeyeGet("/defi/multi_price", { list_address: chunk.join(",") });
+
+    for (const address of chunk) {
+      const value = Number(data?.[address]?.value ?? NaN);
+      if (Number.isFinite(value) && value > 0) prices.set(address, value);
+    }
+  }
+
+  return prices;
+}
+
+export interface TopTradedToken {
+  symbol: string;
+  address: string;
+  liquidityUsd: number;
+  volume24hUsd: number;
+}
+
+// Birdeye's tokenlist page size caps at 50 -- fetch in pages to cover larger counts.
+const TOKENLIST_PAGE_SIZE = 50;
+
+/**
+ * Top tokens by 24h volume ("most traded"). Field names here are my best
+ * understanding of Birdeye's documented /defi/tokenlist shape -- I have no
+ * way to verify them from this environment (no live network access), and
+ * this specific endpoint may also be gated to a paid tier even where
+ * /defi/token_overview and /defi/ohlcv are available on Standard. Verify on
+ * the first live run: if this throws or returns something empty, check the
+ * raw error message it includes before assuming the strategy logic is at fault.
+ */
+export async function getTopTradedTokens(count: number, minLiquidityUsd: number): Promise<TopTradedToken[]> {
+  const results: TopTradedToken[] = [];
+
+  for (let offset = 0; offset < count; offset += TOKENLIST_PAGE_SIZE) {
+    const data = await birdeyeGet("/defi/tokenlist", {
+      sort_by: "v24hUSD",
+      sort_type: "desc",
+      offset: String(offset),
+      limit: String(Math.min(TOKENLIST_PAGE_SIZE, count - offset)),
+    });
+
+    const items = data?.tokens ?? [];
+    if (items.length === 0) break;
+
+    for (const item of items) {
+      const liquidityUsd = Number(item?.liquidity ?? 0);
+      if (liquidityUsd < minLiquidityUsd) continue;
+      if (!item?.address || !item?.symbol) continue;
+
+      results.push({
+        symbol: item.symbol,
+        address: item.address,
+        liquidityUsd,
+        volume24hUsd: Number(item?.v24hUSD ?? 0),
+      });
+    }
+
+    if (items.length < TOKENLIST_PAGE_SIZE) break;
+  }
+
+  return results.slice(0, count);
+}

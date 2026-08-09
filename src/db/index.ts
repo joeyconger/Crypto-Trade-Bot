@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { env } from "../config/env.js";
-import type { WatchlistConfig } from "../types/index.js";
+import type { TokenConfig } from "../types/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,11 +26,11 @@ export function getDb(): Database.Database {
 }
 
 /**
- * Resyncs watchlist_tokens from the YAML config (the source of truth).
- * Tokens removed from the YAML are disabled, not deleted, so historical
- * trades/signal_log rows keep a valid foreign key.
+ * Resyncs watchlist_tokens from the given list (the YAML's static tokens, or
+ * the current top-traded selection). Tokens no longer present are disabled,
+ * not deleted, so historical trades/signal_log rows keep a valid foreign key.
  */
-export function syncWatchlistTokens(config: WatchlistConfig): void {
+export function syncWatchlistTokens(tokens: TokenConfig[]): void {
   const db = getDb();
 
   const upsert = db.prepare(`
@@ -45,11 +45,11 @@ export function syncWatchlistTokens(config: WatchlistConfig): void {
 
   const disableMissing = db.prepare(`
     UPDATE watchlist_tokens SET enabled = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-    WHERE address NOT IN (${config.tokens.map(() => "?").join(",") || "''"}) AND enabled = 1
+    WHERE address NOT IN (${tokens.map(() => "?").join(",") || "''"}) AND enabled = 1
   `);
 
-  const tx = db.transaction((tokens: WatchlistConfig["tokens"]) => {
-    for (const token of tokens) {
+  const tx = db.transaction((list: TokenConfig[]) => {
+    for (const token of list) {
       upsert.run({
         address: token.address,
         symbol: token.symbol,
@@ -57,10 +57,43 @@ export function syncWatchlistTokens(config: WatchlistConfig): void {
         config_json: JSON.stringify(token),
       });
     }
-    disableMissing.run(...tokens.map((t) => t.address));
+    disableMissing.run(...list.map((t) => t.address));
   });
 
-  tx(config.tokens);
+  tx(tokens);
+}
+
+/** Reconstructs the currently-enabled watchlist from the DB (each token's full config, as last synced). */
+export function getWatchlistTokensFromDb(): TokenConfig[] {
+  const rows = getDb()
+    .prepare(`SELECT config_json FROM watchlist_tokens WHERE enabled = 1`)
+    .all() as { config_json: string }[];
+  return rows.map((r) => JSON.parse(r.config_json) as TokenConfig);
+}
+
+export function getWatchlistLastRefreshedAt(): string | undefined {
+  const row = getDb().prepare(`SELECT watchlist_last_refreshed_at FROM bot_state WHERE id = 1`).get() as
+    | { watchlist_last_refreshed_at: string | null }
+    | undefined;
+  return row?.watchlist_last_refreshed_at ?? undefined;
+}
+
+export function setWatchlistLastRefreshedAt(iso: string): void {
+  getDb()
+    .prepare(`UPDATE bot_state SET watchlist_last_refreshed_at = ? WHERE id = 1`)
+    .run(iso);
+}
+
+/** All tokens' last technical-eval timestamps in one query, for the poll loop's per-cycle due-check across the whole watchlist. */
+export function getLastTechnicalEvalAtMap(): Map<string, string> {
+  const rows = getDb()
+    .prepare(`SELECT address, last_technical_eval_at FROM watchlist_tokens WHERE last_technical_eval_at IS NOT NULL`)
+    .all() as { address: string; last_technical_eval_at: string }[];
+  return new Map(rows.map((r) => [r.address, r.last_technical_eval_at]));
+}
+
+export function setLastTechnicalEvalAt(tokenAddress: string, iso: string): void {
+  getDb().prepare(`UPDATE watchlist_tokens SET last_technical_eval_at = ? WHERE address = ?`).run(iso, tokenAddress);
 }
 
 export function getLastTxSignature(tokenAddress: string): string | undefined {

@@ -259,6 +259,69 @@ weak to trust, this is exactly where to tighten back up per-token.
 `extensionRatio2` must exceed `extensionRatio1` (both validated at load
 time). `risk` applies globally across all tokens.
 
+### Dynamic watchlist: trading the top N most-traded tokens
+
+Instead of (or alongside) hand-picking tokens, `watchlistSource.mode:
+top_traded` trades the top `topTradedCount` tokens by 24h volume on Solana,
+re-selected from Birdeye's tokenlist every `refreshIntervalHours`, each using
+the shared `defaultStrategy` block (individually hand-tuning 100 tokens
+isn't realistic). The `tokens` list still rides along as an always-included
+pin list on top of the dynamic selection -- BONK/WIF stay pinned with their
+own params in the shipped config even with `top_traded` enabled.
+
+```yaml
+watchlistSource:
+  mode: top_traded
+  topTradedCount: 100
+  refreshIntervalHours: 24
+  minLiquidityUsd: 50000
+
+defaultStrategy:
+  # same fields as a token entry, minus symbol/address/enabled
+  ...
+  technicalRefreshIntervalMinutes: 240
+```
+
+A failed refresh (Birdeye down, rate-limited, etc.) falls back to the last
+successful selection rather than leaving the bot with zero tokens.
+
+**Keeping this within a free-tier Birdeye budget (e.g. 30k calls/month).**
+The technical trigger needs a fresh OHLCV fetch per token to evaluate fib/
+RSI/volume/close conditions -- that's the unavoidable cost of running 100
+tokens through a real technical strategy, and it doesn't shrink just because
+current price got cheaper to fetch. What *does* shrink it:
+
+- **Batched pricing.** Current price (needed for wallet-activity sizing,
+  position management, and the entry check itself) is fetched for the whole
+  due-batch in one Birdeye `multi_price` call instead of one
+  `token_overview` call per token per cycle.
+- **Per-token throttling, decoupled from poll interval.** Each token only
+  gets a fresh OHLCV fetch + technical re-evaluation once every
+  `technicalRefreshIntervalMinutes` (240 = 4h by default for the dynamic
+  100), tracked per-token in the DB (`watchlist_tokens.last_technical_eval_at`)
+  -- not once per poll cycle. `POLL_INTERVAL_SECONDS` just controls how often
+  the bot *checks whether anything is due*, which is cheap; it no longer
+  determines how often 100 tokens actually get scanned. A token with an open
+  position is always managed every poll cycle regardless (stop/trailing
+  tracking needs to stay current) -- that cost scales with how many
+  positions are open, not watchlist size.
+- **Lazy liquidity lookups.** The optional on-chain-confluence check needs
+  pool liquidity, but only for tokens whose technical trigger already fired
+  that cycle -- so `token_overview` (for liquidity) is only called on an
+  actual signal, not for the whole watchlist every cycle.
+
+With the shipped defaults (100 dynamic tokens at a 4h technical-scan
+interval + 2 pinned tokens at 1h), that's roughly **~21k Birdeye calls/month**
+baseline -- comfortably under a 30k/month cap, with headroom left for
+open-position management and liquidity checks on actual signals. If your
+real usage (check Birdeye's own dashboard after a day or two) comes in under
+budget, tighten `technicalRefreshIntervalMinutes` for faster reaction to new
+setups; if it's over, loosen it or lower `topTradedCount`. Note the uncapped
+concurrent-position limit (see below) means a period with many simultaneous
+open positions will temporarily push usage above this baseline -- each
+position adds one OHLCV call per poll cycle for as long as it's open, capped
+at `timeExitHours`.
+
 ## Logging & visibility
 
 Every entry evaluation is written to `signal_log` -- including the ones that
