@@ -246,14 +246,32 @@ risk:
   consecutiveLossLimit: 4
 ```
 
-These defaults are tuned deliberately loose (a 20-period trend SMA rather
-than 50, a 2.5% golden-pocket zone rather than 1%, RSI midline 60 rather than
-50, 6 allowed MA crossings rather than 3) after the first live run showed the
-tighter starting values essentially never firing on BONK/WIF -- a 50-period
-SMA on hourly candles is a ~2-day lookback that doesn't react to a meme
-coin's actual recent structure, and 1% around a fib level is a needle's-eye
-target. If a week of paper data shows these are now firing on setups too
-weak to trust, this is exactly where to tighten back up per-token.
+These defaults have been loosened twice now, both times because the tighter
+values essentially never fired on BONK/WIF in practice:
+
+| param | original | loosened once | current |
+|---|---|---|---|
+| `trendSmaPeriod` | 50 | 20 | 15 |
+| `goldenPocketZonePct` | 1% | 2.5% | 4% |
+| `chopMaxCrossings` | 3 | 6 | 9 |
+| `rsiMidline` | 50 | 60 | 65 |
+| `rsiOverboughtCeiling` | n/a | 78 | 85 |
+| `volumeConfirmationMultiplier` | n/a | 1.2x | 1.0x (no spike required) |
+| `fibPivotWindow` | n/a | 3 | 2 |
+
+At the current settings, every condition is about as permissive as it can be
+without removing it outright: a 15-period SMA on hourly candles is a
+~15-hour lookback, the golden pocket zone is 8x wider than a standard 0.5%
+target, up to 9 MA crossings in 15 candles is close to pure chop, RSI just
+needs to be turning up anywhere below 65, and the reaction candle no longer
+needs above-average volume at all. If a trade still doesn't fire within a
+few days at these settings, the bottleneck is more likely the underlying
+data (a Birdeye field not populating as expected, `swingLookbackHours` not
+returning enough candles for the chosen `pickOhlcvInterval`, etc.) than the
+threshold values themselves -- check `signal_log`'s `detail` column for the
+specific condition that's failing before loosening further, since past this
+point the technical trigger stops meaningfully filtering for a real setup at
+all.
 
 `scaleOutPct1 + scaleOutPct2` must leave a remainder for the runner, and
 `extensionRatio2` must exceed `extensionRatio1` (both validated at load

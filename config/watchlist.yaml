@@ -29,20 +29,20 @@ watchlistSource:
 # actual usage (check the Birdeye dashboard after a day or two) has headroom,
 # or loosen it if it doesn't.
 defaultStrategy:
-  fibPivotWindow: 3
-  goldenPocketZonePct: 2.5
+  fibPivotWindow: 2
+  goldenPocketZonePct: 4
   swingLookbackHours: 96
 
-  trendSmaPeriod: 20
+  trendSmaPeriod: 15
   chopLookbackPeriods: 15
-  chopMaxCrossings: 6
+  chopMaxCrossings: 9
 
   rsiPeriod: 14
-  rsiMidline: 60
-  rsiOverboughtCeiling: 78
+  rsiMidline: 65
+  rsiOverboughtCeiling: 85
 
   volumeAvgPeriod: 15
-  volumeConfirmationMultiplier: 1.2
+  volumeConfirmationMultiplier: 1.0
 
   minBuyUsd: 5000
   maxBuyPctOfLiquidity: 3
@@ -68,26 +68,26 @@ tokens:
     enabled: true
 
     # --- fib zone + structural confluence ---
-    fibPivotWindow: 3 # candles required on each side to confirm a swing pivot -- lower = fresher/faster-confirming swings
-    goldenPocketZonePct: 2.5 # price must be within this % of the 0.5/0.618 retracement, and that level within this % of a prior pivot
+    fibPivotWindow: 2 # candles required on each side to confirm a swing pivot -- lower = fresher/faster-confirming swings
+    goldenPocketZonePct: 4 # price must be within this % of the 0.5/0.618 retracement, and that level within this % of a prior pivot
     swingLookbackHours: 96 # how much price history to pull for pivot/indicator calculation
 
     # --- trend context filter (don't fight the trend) ---
     # A 50-period SMA on hourly candles is a ~2-day lookback -- too slow to
-    # react to a meme coin's actual recent structure. 20 periods (~20h) tracks
+    # react to a meme coin's actual recent structure. 15 periods (~15h) tracks
     # it much more responsively while still refusing to buy a real downtrend.
-    trendSmaPeriod: 20
+    trendSmaPeriod: 15
     chopLookbackPeriods: 15 # window to count MA crossings in
-    chopMaxCrossings: 6 # this many crossings in the window means "too choppy," skip -- meme coins whipsaw more than a stricter threshold assumes
+    chopMaxCrossings: 9 # this many crossings in the window means "too choppy," skip -- meme coins whipsaw more than a stricter threshold assumes
 
     # --- momentum confirmation (buy the reaction, not the touch) ---
     rsiPeriod: 14
-    rsiMidline: 60 # RSI must be below this and rising
-    rsiOverboughtCeiling: 78 # RSI above this means chasing, not catching a pullback
+    rsiMidline: 65 # RSI must be below this and rising
+    rsiOverboughtCeiling: 85 # RSI above this means chasing, not catching a pullback
 
     # --- volume confirmation on the reaction candle ---
     volumeAvgPeriod: 15
-    volumeConfirmationMultiplier: 1.2
+    volumeConfirmationMultiplier: 1.0
 
     # --- on-chain confluence (optional, non-blocking) ---
     minBuyUsd: 5000
@@ -110,28 +110,28 @@ tokens:
     # --- time-based exit (unscaled portion only -- ignored once scaleOutPct1 has fired) ---
     timeExitHours: 48
 
-    # Pinned tokens are few enough that hourly technical scans cost nothing
-    # meaningful against the Birdeye budget -- keep them responsive.
-    technicalRefreshIntervalMinutes: 60
+    # Pinned tokens are few enough that scanning every poll cycle costs
+    # nothing meaningful against the Birdeye budget -- keep them responsive.
+    technicalRefreshIntervalMinutes: 5
 
   - symbol: WIF
     address: EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm
     enabled: true
 
-    fibPivotWindow: 3
-    goldenPocketZonePct: 2.5
+    fibPivotWindow: 2
+    goldenPocketZonePct: 4
     swingLookbackHours: 96
 
-    trendSmaPeriod: 20
+    trendSmaPeriod: 15
     chopLookbackPeriods: 15
-    chopMaxCrossings: 6
+    chopMaxCrossings: 9
 
     rsiPeriod: 14
-    rsiMidline: 60
-    rsiOverboughtCeiling: 78
+    rsiMidline: 65
+    rsiOverboughtCeiling: 85
 
     volumeAvgPeriod: 15
-    volumeConfirmationMultiplier: 1.2
+    volumeConfirmationMultiplier: 1.0
 
     minBuyUsd: 5000
     maxBuyPctOfLiquidity: 3
@@ -149,7 +149,7 @@ tokens:
     scaleOutPct2: 33
 
     timeExitHours: 48
-    technicalRefreshIntervalMinutes: 60
+    technicalRefreshIntervalMinutes: 5
 
 # Account-level risk management -- applies across all tokens/positions.
 # No cap on concurrent open positions by design.
