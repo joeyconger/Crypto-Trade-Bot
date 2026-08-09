@@ -11,18 +11,31 @@ function headers(): Record<string, string> {
   };
 }
 
-async function birdeyeGet(path: string, params: Record<string, string>): Promise<any> {
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Retries with backoff on 429 -- the free tier's rate limit is easy to hit with multiple watchlist tokens in one poll cycle. */
+async function birdeyeGet(path: string, params: Record<string, string>, retries = 2): Promise<any> {
   const url = new URL(`${BASE_URL}${path}`);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
 
-  const res = await fetch(url, { headers: headers() });
-  const body: any = await res.json().catch(() => undefined);
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const res = await fetch(url, { headers: headers() });
 
-  if (!res.ok || !body?.success) {
-    throw new Error(`Birdeye request to ${path} failed (${res.status}): ${JSON.stringify(body)}`);
+    if (res.status === 429 && attempt < retries) {
+      await sleep(1000 * (attempt + 1));
+      continue;
+    }
+
+    const body: any = await res.json().catch(() => undefined);
+    if (!res.ok || !body?.success) {
+      throw new Error(`Birdeye request to ${path} failed (${res.status}): ${JSON.stringify(body)}`);
+    }
+    return body.data;
   }
 
-  return body.data;
+  throw new Error(`Birdeye request to ${path} failed after ${retries} retries (rate limited)`);
 }
 
 export type OhlcvInterval = "1m" | "5m" | "15m" | "30m" | "1H" | "2H" | "4H" | "6H" | "8H" | "12H" | "1D";

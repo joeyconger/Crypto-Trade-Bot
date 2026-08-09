@@ -238,6 +238,15 @@ async function evaluateAndActOnToken(token: TokenConfig, config: WatchlistConfig
   }
 }
 
+// Gap between tokens within a cycle -- each token evaluation makes multiple
+// Birdeye calls, and back-to-back tokens with no gap is an easy way to hit
+// the free tier's per-second rate limit on the second-plus token every cycle.
+const TOKEN_STAGGER_MS = 1500;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function runPollCycle(): Promise<void> {
   if (getBotState().paused) {
     console.log("Bot is paused -- skipping poll cycle");
@@ -248,11 +257,27 @@ export async function runPollCycle(): Promise<void> {
   syncWatchlistTokens(config);
   const mode: Mode = env.liveTradingEnabled ? "live" : "paper";
 
-  for (const token of config.tokens.filter((t) => t.enabled)) {
+  const enabledTokens = config.tokens.filter((t) => t.enabled);
+  for (let i = 0; i < enabledTokens.length; i++) {
+    const token = enabledTokens[i];
+    if (i > 0) await sleep(TOKEN_STAGGER_MS);
+
     try {
       await evaluateAndActOnToken(token, config, mode);
     } catch (err) {
-      console.error(`[${token.symbol}] evaluation failed:`, err instanceof Error ? err.message : err);
+      // A failed evaluation (rate limit, network blip, etc.) still gets a
+      // signal_log row -- otherwise the token just silently vanishes from
+      // the dashboard for that cycle instead of showing why.
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[${token.symbol}] evaluation failed:`, message);
+      insertSignalLog({
+        tokenAddress: token.address,
+        tokenSymbol: token.symbol,
+        technicalTriggerPassed: false,
+        onchainConfluencePresent: false,
+        actionTaken: "none",
+        detail: JSON.stringify({ error: message }),
+      });
     }
   }
 }
