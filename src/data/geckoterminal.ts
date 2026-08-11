@@ -1,22 +1,24 @@
+import { env } from "../config/env.js";
 import { getCachedPoolAddress, setCachedPoolAddress } from "../db/index.js";
 import type { OhlcvCandle, TokenOverview, TopTradedToken } from "./types.js";
 
 /**
- * GeckoTerminal's free public API -- no API key/signup required, unlike
- * Birdeye. Used as the fallback price/OHLCV provider when Birdeye's quota is
- * exhausted (see PRICE_PROVIDER in config/env.ts). Field shapes below are my
- * best understanding of GeckoTerminal's documented v2 API and are UNVERIFIED
- * from this sandbox (no live network access) -- check the raw error message
- * on the first live run before assuming the strategy logic is at fault, same
- * caveat as every Birdeye endpoint in data/birdeye.ts.
+ * GeckoTerminal's public API -- no API key/signup required to use it at all,
+ * unlike Birdeye. Used as the fallback price/OHLCV provider when Birdeye's
+ * quota is exhausted (see PRICE_PROVIDER in config/env.ts). Field shapes
+ * below are my best understanding of GeckoTerminal's documented v2 API and
+ * are UNVERIFIED from this sandbox (no live network access) -- check the raw
+ * error message on the first live run before assuming the strategy logic is
+ * at fault, same caveat as every Birdeye endpoint in data/birdeye.ts.
  *
- * Free-tier rate limit is commonly cited around 30 requests/minute --
- * noticeably tighter than Birdeye's. TOKEN_STAGGER_MS in engine/loop.ts and
- * the retry-with-backoff below are both tuned with that in mind, but a large
- * due-token burst (e.g. ~100 tokens becoming due at once every
- * technicalRefreshIntervalMinutes) will still run slower than it did on
- * Birdeye -- that's an accepted tradeoff for staying on a free, unmetered
- * plan while Birdeye's quota resets.
+ * Fully anonymous requests (no key) share a rate-limit pool with every other
+ * unauthenticated caller hitting GeckoTerminal worldwide, not just this bot
+ * -- in practice that's noticeably worse than "30 req/min for us." Setting
+ * GECKOTERMINAL_API_KEY to a free CoinGecko "Demo" key (not a paid plan --
+ * no cost, no credit card, just a signup at coingecko.com/en/api/pricing)
+ * gets a dedicated per-key allowance instead, sent via the x-cg-demo-api-key
+ * header per CoinGecko's public docs. Strongly recommended; the bot works
+ * without one, just more prone to 429s under load.
  */
 
 const BASE_URL = "https://api.geckoterminal.com/api/v2";
@@ -26,15 +28,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function gtGet(path: string, params: Record<string, string> = {}, retries = 3): Promise<any> {
+function headers(): Record<string, string> {
+  const base: Record<string, string> = { accept: "application/json" };
+  if (env.GECKOTERMINAL_API_KEY) base["x-cg-demo-api-key"] = env.GECKOTERMINAL_API_KEY;
+  return base;
+}
+
+// A 429 here usually means a shared rate-limit window is exhausted, not that
+// this one request was malformed -- a couple of quick retries rarely help,
+// so this backs off meaningfully (up to ~30s across 4 retries) rather than
+// hammering the same window. If it still fails, the caller (engine/loop.ts)
+// logs it to signal_log and just picks the token back up next poll cycle --
+// a missed cycle here is cheap, so this isn't trying to force success.
+async function gtGet(path: string, params: Record<string, string> = {}, retries = 4): Promise<any> {
   const url = new URL(`${BASE_URL}${path}`);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
 
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const res = await fetch(url, { headers: { accept: "application/json" } });
+    const res = await fetch(url, { headers: headers() });
 
     if (res.status === 429 && attempt < retries) {
-      await sleep(1500 * (attempt + 1));
+      await sleep(3000 * Math.pow(1.8, attempt));
       continue;
     }
 

@@ -22,6 +22,11 @@ const envSchema = z.object({
   // section for the tradeoffs (GeckoTerminal's free tier has a tighter
   // rate limit and a couple of endpoints are best-effort/unverified).
   PRICE_PROVIDER: z.enum(["birdeye", "geckoterminal"]).default("geckoterminal"),
+  // Optional but strongly recommended when PRICE_PROVIDER=geckoterminal: a
+  // free CoinGecko "Demo" key (no cost) gets a dedicated rate-limit
+  // allowance instead of sharing the anonymous pool with every other
+  // unauthenticated caller. See data/geckoterminal.ts.
+  GECKOTERMINAL_API_KEY: z.string().optional(),
 
   TWITTER_BEARER_TOKEN: z.string().optional(),
 

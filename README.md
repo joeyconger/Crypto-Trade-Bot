@@ -163,6 +163,7 @@ signal log.
 |---|---|---|
 | `HELIUS_API_KEY` | RPC (also doubles as the default `SOLANA_RPC_URL`) + wallet activity/reputation lookups | [helius.dev](https://helius.dev) -- free tier is enough for one bot |
 | `BIRDEYE_API_KEY` | OHLCV candles (fib/ATR), liquidity data -- only if `PRICE_PROVIDER=birdeye` | [birdeye.so/find-more](https://birdeye.so/find-more) -- free Standard tier |
+| `GECKOTERMINAL_API_KEY` | Optional but strongly recommended if `PRICE_PROVIDER=geckoterminal` (the default) | [coingecko.com/en/api/pricing](https://www.coingecko.com/en/api/pricing) -- the free "Demo" tier, not a paid plan |
 | `BOT_PRIVATE_KEY` | Live trading only | Run `npm run generate-keypair` yourself -- see [Live trading](#flipping-paper--live) |
 
 Everything else in `.env.example` has a sane default (poll interval, paper
@@ -181,21 +182,28 @@ provider directly):
   [Configuring the watchlist](#dynamic-watchlist-trading-the-top-n-most-traded-tokens)).
   Once that cap is hit, Birdeye stops serving requests for the rest of the
   billing period.
-- **`geckoterminal`** (default) -- GeckoTerminal's free public API, no
-  API key or signup needed at all, so a fresh deploy works immediately and
-  it doubles as the fallback when Birdeye's quota runs out. Tradeoffs:
-  its free tier has a noticeably tighter rate limit (commonly cited around
-  30 requests/minute, vs. Birdeye's per-second limit), and its OHLCV
-  endpoint is scoped to a liquidity pool rather than a token mint directly
-  -- `src/data/geckoterminal.ts` resolves and caches each token's primary
-  pool (by reserve size) the first time it's seen (`token_pool_cache`
-  table), so that's a one-time cost per token, not a per-cycle one. Field
-  shapes for `getTopTradedTokens` in particular (derived from GeckoTerminal's
-  top-pools listing, since it has no direct "top tokens" endpoint) are my
-  best-effort mapping and, like every provider integration in this project,
-  unverified from a sandbox with no live network access -- check the raw
-  error message on first run if it comes back empty rather than assuming
-  the strategy logic is at fault.
+- **`geckoterminal`** (default) -- GeckoTerminal's public API. Works with
+  zero setup so a fresh deploy runs immediately even with Birdeye's quota
+  exhausted, but **set `GECKOTERMINAL_API_KEY` to a free CoinGecko "Demo"
+  key** the first chance you get: a fully anonymous request shares its rate
+  limit with every other unauthenticated caller hitting GeckoTerminal
+  worldwide, not just this bot, which is a much worse ceiling in practice
+  than a per-key allowance. The Demo key is free (no card, no paid plan --
+  don't confuse it with the "Pro"/"Analyst" tiers the 429 error message
+  itself points at), sent via the `x-cg-demo-api-key` header. Even with a
+  key, this provider has a couple of other tradeoffs vs. Birdeye: its
+  OHLCV endpoint is scoped to a liquidity pool rather than a token mint
+  directly -- `src/data/geckoterminal.ts` resolves and caches each token's
+  primary pool (by reserve size) the first time it's seen (`token_pool_cache`
+  table), so that's a one-time cost per token, not a per-cycle one -- and
+  the field shapes for `getTopTradedTokens` in particular (derived from
+  GeckoTerminal's top-pools listing, since it has no direct "top tokens"
+  endpoint) are my best-effort mapping and, like every provider integration
+  in this project, unverified from a sandbox with no live network access --
+  check the raw error message on first run if it comes back empty rather
+  than assuming the strategy logic is at fault. A 429 that survives the
+  built-in retry/backoff isn't fatal either way: engine/loop.ts logs it to
+  `signal_log` and that token is simply picked up again next cycle.
 
 Switching providers is a one-line env change (`PRICE_PROVIDER=birdeye` or
 `geckoterminal`) and a redeploy -- no code changes, and `token_pool_cache`
