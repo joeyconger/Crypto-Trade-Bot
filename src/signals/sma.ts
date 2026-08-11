@@ -1,4 +1,4 @@
-import type { OhlcvCandle } from "../data/birdeye.js";
+import type { OhlcvCandle } from "../data/types.js";
 
 export function computeSMA(candles: OhlcvCandle[], period: number): number | undefined {
   if (candles.length < period) return undefined;

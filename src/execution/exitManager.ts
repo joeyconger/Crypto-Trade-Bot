@@ -1,6 +1,6 @@
 import { getTradeSignalWallets, hasWalletSoldTokenSince, updateTradeTrailingStop, type TradeRow } from "../db/index.js";
 import { findConfirmedSwing } from "../signals/fib.js";
-import type { OhlcvCandle } from "../data/birdeye.js";
+import type { OhlcvCandle } from "../data/types.js";
 import type { TokenConfig } from "../types/index.js";
 
 /** A tracked whale (one of THIS trade's confirming entry wallets) dumping overrides everything else. */

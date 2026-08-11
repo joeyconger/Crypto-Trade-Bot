@@ -1,4 +1,4 @@
-import type { OhlcvCandle } from "../data/birdeye.js";
+import type { OhlcvCandle } from "../data/types.js";
 import type { TokenConfig } from "../types/index.js";
 import { checkGoldenPocket, findPivots, isWithinZone, type Swing, type FibLevel } from "./fib.js";
 import { computeSMA, countMaCrossings } from "./sma.js";

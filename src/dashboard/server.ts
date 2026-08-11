@@ -18,7 +18,7 @@ import {
   getWatchlistLastRefreshedAt,
 } from "../db/index.js";
 import { checkCircuitBreakers, resumeWeeklyHalt, resumeConsecutiveLossHalt } from "../execution/circuitBreakers.js";
-import { getTokenOverview } from "../data/birdeye.js";
+import { getTokenOverview } from "../data/priceProvider.js";
 import { getBotWalletBalanceUsd } from "../execution/liveTrading.js";
 import type { RiskConfig } from "../types/index.js";
 

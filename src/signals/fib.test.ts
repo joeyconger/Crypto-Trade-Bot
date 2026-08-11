@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { computeFibLevels, computeFibExtensions, findPivots, findConfirmedSwing, checkGoldenPocket, isWithinZone, pctDistance } from "./fib.js";
-import type { OhlcvCandle } from "../data/birdeye.js";
+import type { OhlcvCandle } from "../data/types.js";
 
 function candle(unixTime: number, o: number, h: number, l: number, c: number, v = 100): OhlcvCandle {
   return { unixTime, open: o, high: h, low: l, close: c, volume: v };

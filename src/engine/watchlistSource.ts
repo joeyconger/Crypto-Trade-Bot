@@ -1,4 +1,4 @@
-import { getTopTradedTokens } from "../data/birdeye.js";
+import { getTopTradedTokens } from "../data/priceProvider.js";
 import {
   syncWatchlistTokens,
   getWatchlistTokensFromDb,

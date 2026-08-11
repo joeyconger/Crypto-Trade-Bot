@@ -8,7 +8,7 @@ import {
   type TradeRow,
   type PlannedTradeInput,
 } from "../db/index.js";
-import { getTokenOverview } from "../data/birdeye.js";
+import { getTokenOverview } from "../data/priceProvider.js";
 import { getConnection } from "../solana/connection.js";
 import { getBotKeypair } from "../solana/keypair.js";
 import { getTokenBalanceRaw } from "../solana/tokenAccounts.js";

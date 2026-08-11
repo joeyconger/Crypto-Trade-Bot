@@ -16,6 +16,13 @@ const envSchema = z.object({
   HELIUS_API_KEY: z.string().optional(),
   BIRDEYE_API_KEY: z.string().optional(),
 
+  // "geckoterminal" needs no API key (free public API) -- default here so a
+  // fresh deploy works even with Birdeye's quota exhausted. Switch back to
+  // "birdeye" once your plan resets/upgrades -- see README's data provider
+  // section for the tradeoffs (GeckoTerminal's free tier has a tighter
+  // rate limit and a couple of endpoints are best-effort/unverified).
+  PRICE_PROVIDER: z.enum(["birdeye", "geckoterminal"]).default("geckoterminal"),
+
   TWITTER_BEARER_TOKEN: z.string().optional(),
 
   DATABASE_PATH: z.string().default("./data/bot.sqlite"),

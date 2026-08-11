@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { evaluateTechnicalTrigger } from "./technicalTrigger.js";
-import type { OhlcvCandle } from "../data/birdeye.js";
+import type { OhlcvCandle } from "../data/types.js";
 import type { TokenConfig } from "../types/index.js";
 
 function candle(unixTime: number, o: number, h: number, l: number, c: number, v = 100): OhlcvCandle {

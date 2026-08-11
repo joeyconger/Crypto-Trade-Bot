@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { computeSMA, countMaCrossings } from "./sma.js";
-import type { OhlcvCandle } from "../data/birdeye.js";
+import type { OhlcvCandle } from "../data/types.js";
 
 function candle(unixTime: number, close: number): OhlcvCandle {
   return { unixTime, open: close, high: close, low: close, close, volume: 100 };

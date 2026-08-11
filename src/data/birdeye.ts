@@ -1,4 +1,5 @@
 import { env } from "../config/env.js";
+import type { OhlcvCandle, TokenOverview, TopTradedToken } from "./types.js";
 
 const BASE_URL = "https://public-api.birdeye.so";
 
@@ -38,20 +39,11 @@ async function birdeyeGet(path: string, params: Record<string, string>, retries 
   throw new Error(`Birdeye request to ${path} failed after ${retries} retries (rate limited)`);
 }
 
-export type OhlcvInterval = "1m" | "5m" | "15m" | "30m" | "1H" | "2H" | "4H" | "6H" | "8H" | "12H" | "1D";
-
-export interface OhlcvCandle {
-  unixTime: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
+type OhlcvInterval = "1m" | "5m" | "15m" | "30m" | "1H" | "2H" | "4H" | "6H" | "8H" | "12H" | "1D";
 
 // Interval scales with the configured lookback so a token watched over a few
 // hours gets fine-grained candles, while a multi-week lookback doesn't over-fetch.
-export function pickOhlcvInterval(lookbackHours: number): OhlcvInterval {
+function pickOhlcvInterval(lookbackHours: number): OhlcvInterval {
   if (lookbackHours <= 12) return "5m";
   if (lookbackHours <= 48) return "15m";
   if (lookbackHours <= 24 * 14) return "1H";
@@ -60,13 +52,13 @@ export function pickOhlcvInterval(lookbackHours: number): OhlcvInterval {
 
 export async function getOhlcv(
   address: string,
-  type: OhlcvInterval,
+  swingLookbackHours: number,
   timeFrom: number,
   timeTo: number,
 ): Promise<OhlcvCandle[]> {
   const data = await birdeyeGet("/defi/ohlcv", {
     address,
-    type,
+    type: pickOhlcvInterval(swingLookbackHours),
     time_from: String(timeFrom),
     time_to: String(timeTo),
   });
@@ -80,13 +72,6 @@ export async function getOhlcv(
     close: item.c,
     volume: item.v,
   }));
-}
-
-export interface TokenOverview {
-  price: number;
-  liquidityUsd: number;
-  volume24hUsd: number;
-  priceChange24hPct: number;
 }
 
 export async function getTokenOverview(address: string): Promise<TokenOverview> {
@@ -129,13 +114,6 @@ export async function getMultiPrice(addresses: string[]): Promise<Map<string, nu
   }
 
   return prices;
-}
-
-export interface TopTradedToken {
-  symbol: string;
-  address: string;
-  liquidityUsd: number;
-  volume24hUsd: number;
 }
 
 // Birdeye's tokenlist page size caps at 50 -- fetch in pages to cover larger counts.

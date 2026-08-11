@@ -1,4 +1,4 @@
-import type { OhlcvCandle } from "../data/birdeye.js";
+import type { OhlcvCandle } from "../data/types.js";
 
 export interface Swing {
   highPrice: number;

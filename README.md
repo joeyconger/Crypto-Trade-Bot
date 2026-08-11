@@ -162,11 +162,47 @@ signal log.
 | Var | Required for | Where to get it |
 |---|---|---|
 | `HELIUS_API_KEY` | RPC (also doubles as the default `SOLANA_RPC_URL`) + wallet activity/reputation lookups | [helius.dev](https://helius.dev) -- free tier is enough for one bot |
-| `BIRDEYE_API_KEY` | OHLCV candles (fib/ATR), liquidity data | [birdeye.so/find-more](https://birdeye.so/find-more) -- free Standard tier |
+| `BIRDEYE_API_KEY` | OHLCV candles (fib/ATR), liquidity data -- only if `PRICE_PROVIDER=birdeye` | [birdeye.so/find-more](https://birdeye.so/find-more) -- free Standard tier |
 | `BOT_PRIVATE_KEY` | Live trading only | Run `npm run generate-keypair` yourself -- see [Live trading](#flipping-paper--live) |
 
 Everything else in `.env.example` has a sane default (poll interval, paper
 starting balance, dashboard port, DB path, watchlist config path).
+
+### Price/OHLCV data provider: Birdeye or GeckoTerminal
+
+`PRICE_PROVIDER` picks which service serves OHLCV candles, current price,
+and the top-traded token list (`src/data/priceProvider.ts` is the single
+switch point -- every other module imports through it, never a specific
+provider directly):
+
+- **`birdeye`** -- the more thoroughly exercised option, but needs
+  `BIRDEYE_API_KEY` and a metered plan (the free Standard tier has a
+  monthly call cap -- see the budget math in
+  [Configuring the watchlist](#dynamic-watchlist-trading-the-top-n-most-traded-tokens)).
+  Once that cap is hit, Birdeye stops serving requests for the rest of the
+  billing period.
+- **`geckoterminal`** (default) -- GeckoTerminal's free public API, no
+  API key or signup needed at all, so a fresh deploy works immediately and
+  it doubles as the fallback when Birdeye's quota runs out. Tradeoffs:
+  its free tier has a noticeably tighter rate limit (commonly cited around
+  30 requests/minute, vs. Birdeye's per-second limit), and its OHLCV
+  endpoint is scoped to a liquidity pool rather than a token mint directly
+  -- `src/data/geckoterminal.ts` resolves and caches each token's primary
+  pool (by reserve size) the first time it's seen (`token_pool_cache`
+  table), so that's a one-time cost per token, not a per-cycle one. Field
+  shapes for `getTopTradedTokens` in particular (derived from GeckoTerminal's
+  top-pools listing, since it has no direct "top tokens" endpoint) are my
+  best-effort mapping and, like every provider integration in this project,
+  unverified from a sandbox with no live network access -- check the raw
+  error message on first run if it comes back empty rather than assuming
+  the strategy logic is at fault.
+
+Switching providers is a one-line env change (`PRICE_PROVIDER=birdeye` or
+`geckoterminal`) and a redeploy -- no code changes, and `token_pool_cache`
+sitting unused when on Birdeye is harmless. `TOKEN_STAGGER_MS`
+(`src/engine/loop.ts`) is tuned for GeckoTerminal's tighter limit since
+that's the default; both providers retry with backoff on a 429 as a
+backstop for bursts that still exceed it.
 
 ### Why Helius *and* Birdeye
 

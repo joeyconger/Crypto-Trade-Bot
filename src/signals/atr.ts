@@ -1,4 +1,4 @@
-import type { OhlcvCandle } from "../data/birdeye.js";
+import type { OhlcvCandle } from "../data/types.js";
 
 /**
  * Average True Range via Wilder's smoothing (the standard ATR, not a plain

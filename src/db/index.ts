@@ -96,6 +96,24 @@ export function setLastTechnicalEvalAt(tokenAddress: string, iso: string): void 
   getDb().prepare(`UPDATE watchlist_tokens SET last_technical_eval_at = ? WHERE address = ?`).run(iso, tokenAddress);
 }
 
+// ---- token_pool_cache (GeckoTerminal provider only) ----
+
+export function getCachedPoolAddress(tokenAddress: string): string | undefined {
+  const row = getDb().prepare(`SELECT pool_address FROM token_pool_cache WHERE token_address = ?`).get(tokenAddress) as
+    | { pool_address: string }
+    | undefined;
+  return row?.pool_address;
+}
+
+export function setCachedPoolAddress(tokenAddress: string, poolAddress: string): void {
+  getDb()
+    .prepare(
+      `INSERT INTO token_pool_cache (token_address, pool_address) VALUES (?, ?)
+       ON CONFLICT(token_address) DO UPDATE SET pool_address = excluded.pool_address, resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+    )
+    .run(tokenAddress, poolAddress);
+}
+
 export function getLastTxSignature(tokenAddress: string): string | undefined {
   const row = getDb()
     .prepare(`SELECT last_tx_signature FROM watchlist_tokens WHERE address = ?`)

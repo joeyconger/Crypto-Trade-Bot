@@ -20,6 +20,16 @@ CREATE TABLE IF NOT EXISTS watchlist_tokens (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+-- GeckoTerminal's OHLCV endpoint is scoped to a liquidity pool, not a token
+-- mint -- caches each token's resolved primary pool (data/geckoterminal.ts)
+-- so that lookup only costs a network call the first time a token is seen,
+-- not on every OHLCV fetch. Unused when PRICE_PROVIDER=birdeye.
+CREATE TABLE IF NOT EXISTS token_pool_cache (
+  token_address TEXT PRIMARY KEY,
+  pool_address TEXT NOT NULL,
+  resolved_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 -- Every observed buy/sell on a watchlist token, for any wallet size -- not
 -- just qualifying "whale" candidates. This is the raw material wallet
 -- reputation and entry-trigger confirmation are built from.

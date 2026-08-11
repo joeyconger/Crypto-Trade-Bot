@@ -1,4 +1,4 @@
-import type { OhlcvCandle } from "../data/birdeye.js";
+import type { OhlcvCandle } from "../data/types.js";
 
 function rsiFromAverages(avgGain: number, avgLoss: number): number {
   if (avgLoss === 0) return 100;

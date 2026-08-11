@@ -11,7 +11,8 @@ import {
   type TradeRow,
 } from "../db/index.js";
 import { resolveWatchlistTokens } from "./watchlistSource.js";
-import { getTokenOverview, getMultiPrice, getOhlcv, pickOhlcvInterval, type OhlcvCandle } from "../data/birdeye.js";
+import { getTokenOverview, getMultiPrice, getOhlcv } from "../data/priceProvider.js";
+import type { OhlcvCandle } from "../data/types.js";
 import { pollWalletActivity } from "../onchain/walletActivity.js";
 import { evaluateEntryTrigger } from "../onchain/entryTrigger.js";
 import { evaluateTechnicalTrigger } from "../signals/technicalTrigger.js";
@@ -37,10 +38,9 @@ async function getBankrollUsd(mode: Mode): Promise<number> {
 }
 
 async function fetchCandles(token: TokenConfig): Promise<OhlcvCandle[]> {
-  const interval = pickOhlcvInterval(token.swingLookbackHours);
   const timeTo = Math.floor(Date.now() / 1000);
   const timeFrom = timeTo - token.swingLookbackHours * 3600;
-  return (await getOhlcv(token.address, interval, timeFrom, timeTo)).sort((a, b) => a.unixTime - b.unixTime);
+  return (await getOhlcv(token.address, token.swingLookbackHours, timeFrom, timeTo)).sort((a, b) => a.unixTime - b.unixTime);
 }
 
 async function manageOpenPosition(
@@ -253,9 +253,12 @@ async function evaluateAndActOnToken(
 }
 
 // Gap between tokens within a cycle -- each token evaluation makes multiple
-// Birdeye calls, and back-to-back tokens with no gap is an easy way to hit
-// the free tier's per-second rate limit on the second-plus token every cycle.
-export const TOKEN_STAGGER_MS = 1500;
+// provider calls, and back-to-back tokens with no gap is an easy way to hit
+// a free tier's per-minute rate limit partway through a cycle. 2000ms keeps
+// steady-state throughput under GeckoTerminal's free-tier ~30 req/min (the
+// tighter of the two providers); retry-with-backoff in data/geckoterminal.ts
+// and data/birdeye.ts is the backstop for bursts that still exceed it.
+export const TOKEN_STAGGER_MS = 2000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
