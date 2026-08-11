@@ -87,6 +87,47 @@ test("checkGoldenPocket fails when price is nowhere near the golden pocket", () 
   assert.equal(result.passed, false);
 });
 
+// Same rally as bullishSwingCandles (low=5 @ t2, high=20 @ t7), but the
+// pullback after the high isn't perfectly monotonic -- it wiggles down to
+// 17, bounces to 18, then continues down to 14, forming a confirmed pivot
+// LOW at t=9 (18 is a local max between two lower points -- not itself a
+// pivot low; 14 at t=10 is). This is what a real, noisy pullback looks like,
+// and is exactly the shape that used to flip the swing to "down" and get
+// the setup rejected as bearish even though the pullback low (14) never
+// traded below the original swing low (5).
+const noisyPullbackCandles = [
+  candle(0, 9, 10, 9, 10),
+  candle(1, 9, 9, 8, 9),
+  candle(2, 8, 8, 5, 6), // pivot low (swing low)
+  candle(3, 6, 9, 7, 8),
+  candle(4, 8, 10, 8, 9),
+  candle(5, 9, 15, 10, 14),
+  candle(6, 14, 18, 12, 17),
+  candle(7, 17, 20, 14, 19), // pivot high (swing high)
+  candle(8, 19, 18, 16, 17),
+  candle(9, 17, 18, 15, 16),
+  candle(10, 16, 17, 14, 15), // pivot low (shallow pullback wiggle, well above 5)
+  candle(11, 15, 17, 15, 16),
+  candle(12, 16, 18, 15, 17),
+];
+
+test("findConfirmedSwing stays 'up' through a noisy (non-monotonic) pullback that doesn't break the swing low", () => {
+  const swing = findConfirmedSwing(noisyPullbackCandles, 2);
+  assert.ok(swing);
+  assert.equal(swing!.direction, "up");
+  assert.equal(swing!.lowPrice, 5);
+  assert.equal(swing!.highPrice, 20);
+});
+
+test("findConfirmedSwing flips to 'down' when a post-high pullback low actually breaks below the swing low", () => {
+  const brokenStructureCandles = noisyPullbackCandles.map((c, i) =>
+    i === 10 ? { ...c, low: 3, close: 4 } : c,
+  );
+  const swing = findConfirmedSwing(brokenStructureCandles, 2);
+  assert.ok(swing);
+  assert.equal(swing!.direction, "down");
+});
+
 test("checkGoldenPocket refuses to chase a confirmed downtrend", () => {
   const bearishCandles = [...bullishSwingCandles].reverse().map((c, i) => ({ ...c, unixTime: i }));
   const result = checkGoldenPocket(bearishCandles, 12.5, 2, 1);

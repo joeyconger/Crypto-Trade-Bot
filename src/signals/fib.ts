@@ -55,24 +55,53 @@ export function findPivots(candles: OhlcvCandle[], window = 5): Pivot[] {
 }
 
 /**
- * The most recent CONFIRMED swing -- built from the most recent confirmed
- * pivot high and pivot low (each needing `pivotWindow` candles on both sides
- * before counting as a real local extreme, not still-forming price action).
- * Undefined until there's been enough price history to confirm both a pivot
- * high and a pivot low at all.
+ * The most recent CONFIRMED swing -- the most recent confirmed pivot high,
+ * paired with the swing low the rally leading to it started from (the most
+ * recent confirmed low BEFORE that high). Each pivot needs `pivotWindow`
+ * candles on both sides before counting as a real local extreme, not
+ * still-forming price action. Undefined until there's enough history to
+ * confirm at least one pivot high and one pivot low at all.
+ *
+ * A pivot low confirmed AFTER the high (e.g. a minor bounce during the
+ * pullback) does NOT by itself flip this to a "down" swing -- that's what a
+ * golden-pocket retracement in a live uptrend looks like, and treating every
+ * such wiggle as a structure break made this essentially never confirm an
+ * "up" swing on real, noisy price action. It only counts as broken structure
+ * -- genuinely bearish, not a retracement -- if that post-high low actually
+ * traded BELOW the level the rally started from.
  */
 export function findConfirmedSwing(candles: OhlcvCandle[], pivotWindow = 5): Swing | undefined {
   const pivots = findPivots(candles, pivotWindow);
-  const mostRecentHigh = pivots.filter((p) => p.type === "high").sort((a, b) => b.time - a.time)[0];
-  const mostRecentLow = pivots.filter((p) => p.type === "low").sort((a, b) => b.time - a.time)[0];
+  const highs = pivots.filter((p) => p.type === "high").sort((a, b) => b.time - a.time);
+  const lows = pivots.filter((p) => p.type === "low").sort((a, b) => b.time - a.time);
+
+  const mostRecentHigh = highs[0];
+  const mostRecentLow = lows[0];
   if (!mostRecentHigh || !mostRecentLow) return undefined;
 
+  const lowBeforeHigh = lows.find((p) => p.time < mostRecentHigh.time);
+  const structureBroken =
+    lowBeforeHigh !== undefined && mostRecentLow.time > mostRecentHigh.time && mostRecentLow.price < lowBeforeHigh.price;
+
+  if (lowBeforeHigh && !structureBroken) {
+    return {
+      highPrice: mostRecentHigh.price,
+      highTime: mostRecentHigh.time,
+      lowPrice: lowBeforeHigh.price,
+      lowTime: lowBeforeHigh.time,
+      direction: "up",
+    };
+  }
+
+  // No low precedes the most recent high at all (pure decline so far, no
+  // rally to retrace yet), or the pullback broke below the rally's origin --
+  // either way, the most recently confirmed structure is bearish.
   return {
     highPrice: mostRecentHigh.price,
     highTime: mostRecentHigh.time,
     lowPrice: mostRecentLow.price,
     lowTime: mostRecentLow.time,
-    direction: mostRecentLow.time <= mostRecentHigh.time ? "up" : "down",
+    direction: "down",
   };
 }
 
