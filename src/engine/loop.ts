@@ -50,7 +50,13 @@ async function manageOpenPosition(
   currentPrice: number,
   mode: Mode,
 ): Promise<void> {
-  const candles = await fetchCandles(token);
+  // decideExitAction only reads candles for the runner's structure-trailing
+  // stop (its runner_active branch) -- stop/scale-out/time-exit checks are
+  // all plain price comparisons. Fetching a full OHLCV history every cycle
+  // for every open position regardless of runner state was pure waste, and
+  // with positions uncapped this was almost certainly the single biggest
+  // driver of Birdeye usage once entries started actually firing.
+  const candles = trade.runner_active ? await fetchCandles(token) : [];
   const hasReversal = checkSignalReversal(trade);
   const action = decideExitAction(trade, currentPrice, candles, token, hasReversal);
 

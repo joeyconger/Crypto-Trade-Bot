@@ -327,18 +327,25 @@ current price got cheaper to fetch. What *does* shrink it:
   pool liquidity, but only for tokens whose technical trigger already fired
   that cycle -- so `token_overview` (for liquidity) is only called on an
   actual signal, not for the whole watchlist every cycle.
+- **Open positions only fetch candles once the runner is active.** Stop-loss,
+  scale-out targets, and the time exit are all plain price comparisons --
+  `decideExitAction` only reads OHLCV history for the runner's
+  structure-trailing stop, which only exists after both scale-outs have
+  fired. An open position that hasn't reached that stage yet costs zero
+  extra Birdeye calls beyond the batched price it already gets as part of
+  the due-token price fetch.
 
 With the shipped defaults (100 dynamic tokens at a 4h technical-scan
 interval + 2 pinned tokens at 1h), that's roughly **~21k Birdeye calls/month**
-baseline -- comfortably under a 30k/month cap, with headroom left for
-open-position management and liquidity checks on actual signals. If your
-real usage (check Birdeye's own dashboard after a day or two) comes in under
-budget, tighten `technicalRefreshIntervalMinutes` for faster reaction to new
-setups; if it's over, loosen it or lower `topTradedCount`. Note the uncapped
-concurrent-position limit (see below) means a period with many simultaneous
-open positions will temporarily push usage above this baseline -- each
-position adds one OHLCV call per poll cycle for as long as it's open, capped
-at `timeExitHours`.
+baseline -- comfortably under a 30k/month cap. If your real usage (check
+Birdeye's own dashboard after a day or two) comes in under budget, tighten
+`technicalRefreshIntervalMinutes` for faster reaction to new setups; if it's
+over, loosen it or lower `topTradedCount`. The remaining variable is the
+uncapped concurrent-position limit (see below): a period with many
+simultaneous *runner-active* positions (already through both scale-outs, so
+still trailing a live stop) will push usage above this baseline, at one
+OHLCV call per poll cycle per such position for as long as it stays in that
+state.
 
 ## Logging & visibility
 
