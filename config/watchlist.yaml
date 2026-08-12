@@ -31,7 +31,16 @@ watchlistSource:
 defaultStrategy:
   fibPivotWindow: 2
   goldenPocketZonePct: 4
-  swingLookbackHours: 96
+  # 24h (not 96h like the pinned tokens below) puts this in the 15-minute
+  # candle bucket instead of 1-hour (see pickTimeframe in
+  # data/geckoterminal.ts) -- the trend/RSI/volume checks still need the
+  # same 14-15 real candles, just packed into ~3.5-3.75h of pool age instead
+  # of ~15h. The dynamic top-100 pulls in viral, sometimes hours-old meme
+  # coins; a 96h requirement was rejecting most of them purely for being
+  # "too new," not for lacking a real setup. Established tokens like the
+  # pinned BONK/WIF don't need this -- they keep the longer 96h/1h-candle
+  # lookback since they have years of history either way.
+  swingLookbackHours: 24
 
   trendSmaPeriod: 15
   chopLookbackPeriods: 15
