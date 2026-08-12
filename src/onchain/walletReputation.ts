@@ -1,6 +1,5 @@
 import { getRecentTransactions } from "../data/helius.js";
 import { getWalletReputation, upsertWalletAgeAndTag, updateWalletReputationScore, getWalletActivity } from "../db/index.js";
-import { getKnownWalletTag } from "../config/knownWallets.js";
 
 const AGE_LOOKUP_MAX_PAGES = 5;
 const AGE_LOOKUP_PAGE_SIZE = 100;
@@ -39,20 +38,33 @@ export interface WalletCheckResult {
   walletAddress: string;
   ageDays: number | null;
   historyTxCount: number;
-  tag: string | null;
   reputationScore: number;
   dumpsInLast5: number;
   passesAgeAndHistory: boolean;
-  passesTag: boolean;
   passesReputation: boolean;
 }
 
 /**
- * Age/tag are cached in wallet_reputation after the first lookup (age_checked_at
- * set once) -- only hits Helius' wallet-history endpoint the first time a given
- * wallet shows up as a candidate, not every cycle it's re-evaluated. The local
- * reputation score is cheap (no network call, just our own wallet_activity) so
- * it's recomputed and re-cached on every check.
+ * Age is cached in wallet_reputation after the first lookup (age_checked_at
+ * set once) -- only hits Helius' wallet-history endpoint the first time a
+ * given wallet shows up as a candidate, not every cycle it's re-evaluated.
+ * The local reputation score is cheap (no network call, just our own
+ * wallet_activity) so it's recomputed and re-cached on every check.
+ *
+ * There is deliberately no exchange/bridge/market-maker tag filter here
+ * anymore. That used to be a config/known-wallets.yaml denylist which
+ * shipped permanently empty. I could not verify from this sandbox (no live
+ * network access) whether Helius' or Birdeye's/GeckoTerminal's current
+ * free/standard-tier endpoints expose a wallet-level exchange/bridge/MM
+ * labeling API -- I'm not confident one does, but I can't confirm it either
+ * way, so rather than guess and hand-build a list from memory (the same
+ * risk this project has avoided everywhere else: a wrong guess creates
+ * false confidence in a safety-relevant filter), it's removed. A filter
+ * that LOOKS active but never actually excludes anything is worse than no
+ * filter, since it reads as a real safety control in the logs when it did
+ * nothing. If you find and verify a real labeling source (a paid Helius
+ * tier, Solscan's labeled addresses, your own observation), this is the
+ * place to reintroduce it as a going-forward denylist check.
  */
 export async function checkWallet(
   walletAddress: string,
@@ -62,10 +74,8 @@ export async function checkWallet(
   let cached = getWalletReputation(walletAddress);
 
   if (!cached?.age_checked_at) {
-    const tag = getKnownWalletTag(walletAddress);
-    // Don't bother spending Helius calls on age history for a wallet we can already tag from config.
-    const { firstTxAt, txCount } = tag ? { firstTxAt: null, txCount: 0 } : await lookupWalletAge(walletAddress);
-    upsertWalletAgeAndTag(walletAddress, firstTxAt, txCount, tag);
+    const { firstTxAt, txCount } = await lookupWalletAge(walletAddress);
+    upsertWalletAgeAndTag(walletAddress, firstTxAt, txCount, null);
     cached = getWalletReputation(walletAddress);
   }
 
@@ -81,11 +91,9 @@ export async function checkWallet(
     walletAddress,
     ageDays,
     historyTxCount,
-    tag: cached?.tag ?? null,
     reputationScore: local.score,
     dumpsInLast5: local.dumps,
     passesAgeAndHistory: ageDays !== null && ageDays >= minAgeDays && historyTxCount >= minPriorTrades,
-    passesTag: !cached?.tag,
     // Literal reading of "last 5 trades didn't end in a dump": zero observed
     // dumps required. No observed buys yet is neutral -- passes, not blocked
     // for lack of data.

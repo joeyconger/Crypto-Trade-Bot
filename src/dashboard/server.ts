@@ -104,7 +104,9 @@ export function createDashboardServer() {
       openPositionsCount: getOpenTrades().filter((t) => t.mode === mode).length,
       risk: {
         riskPctPerTrade: config.risk.riskPctPerTrade,
+        riskPctPerTradeTierB: config.risk.riskPctPerTradeTierB,
         maxPositionSizePct: config.risk.maxPositionSizePct,
+        maxConcurrentPositions: config.risk.maxConcurrentPositions,
         dailyPnlUsd: dailyPnl,
         dailyLimitUsd: bankrollUsd * (config.risk.dailyLossLimitPct / 100),
         weeklyPnlUsd: weeklyPnl,

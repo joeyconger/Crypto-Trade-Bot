@@ -88,6 +88,11 @@ CREATE TABLE IF NOT EXISTS trades (
   runner_active INTEGER NOT NULL DEFAULT 0, -- true once scale_out_2 fires and the final third is trailing
   time_exit_deadline TEXT NOT NULL, -- opened_at + configured hours; irrelevant once scale_out_1_done
 
+  -- Which on-chain confluence tier fired this entry -- 'A' (2+ mutually-
+  -- unconnected wallets) or 'B' (1 wallet clearing the raised solo bar).
+  -- On-chain confluence is a required gate, so every trade has one.
+  confluence_tier TEXT NOT NULL CHECK (confluence_tier IN ('A', 'B')),
+
   reason TEXT, -- human-readable summary of what fired the entry
   tx_signature TEXT, -- entry swap signature, live mode only
 

@@ -128,7 +128,18 @@ const TOKENLIST_PAGE_SIZE = 50;
  * the first live run: if this throws or returns something empty, check the
  * raw error message it includes before assuming the strategy logic is at fault.
  */
-export async function getTopTradedTokens(count: number, minLiquidityUsd: number): Promise<TopTradedToken[]> {
+/**
+ * minTokenAgeHours is accepted for interface parity with the GeckoTerminal
+ * provider (data/geckoterminal.ts) but NOT enforced here -- Birdeye's
+ * /defi/tokenlist response shape (as documented/guessed above) doesn't
+ * appear to expose a pool/token creation timestamp to filter on. If you're
+ * running on PRICE_PROVIDER=birdeye and need the min-token-age control to
+ * actually work, either confirm Birdeye exposes creation time somewhere in
+ * this endpoint's real response and wire it in, or switch to
+ * PRICE_PROVIDER=geckoterminal where it is enforced.
+ */
+export async function getTopTradedTokens(count: number, minLiquidityUsd: number, minTokenAgeHours: number): Promise<TopTradedToken[]> {
+  void minTokenAgeHours;
   const results: TopTradedToken[] = [];
 
   for (let offset = 0; offset < count; offset += TOKENLIST_PAGE_SIZE) {

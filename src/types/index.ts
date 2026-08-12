@@ -1,8 +1,12 @@
+/** "A" = 2+ mutually-unconnected confirming wallets. "B" = 1 wallet clearing the raised solo bar. See onchain/entryTrigger.ts. */
+export type ConfluenceTier = "A" | "B";
+
 /** The shared strategy parameters -- everything about HOW to trade a token, independent of WHICH token. */
 export interface StrategyConfig {
-  // Technical trigger -- the entry gate. Fires on trend + fib/structural
-  // confluence + RSI momentum + volume + confirmed candle close, with no
-  // on-chain confirmation required.
+  // Technical filter -- Conditions 1-6, entry-TIMING only. Fires on trend +
+  // fib/structural confluence + RSI momentum + volume + confirmed candle
+  // close. Necessary but no longer sufficient on its own -- see the
+  // required on-chain confluence gate below.
   fibPivotWindow: number; // candles on each side to confirm a swing pivot
   goldenPocketZonePct: number; // % proximity to the 0.5/0.618 retracement (and to a prior pivot for structural confluence) to count as "at" it
   swingLookbackHours: number; // how much OHLCV history to fetch for pivot/indicator calculation
@@ -18,16 +22,22 @@ export interface StrategyConfig {
   volumeAvgPeriod: number;
   volumeConfirmationMultiplier: number; // reaction candle volume must be >= this x the average
 
-  // On-chain confluence (optional, non-blocking -- see onchain/entryTrigger.ts).
-  // A qualifying wallet buy alongside a fired technical trigger gets logged
-  // against the trade and noted in its reason, but its absence never blocks
-  // an entry.
-  minBuyUsd: number;
-  maxBuyPctOfLiquidity: number;
+  // On-chain confluence -- Condition 7, REQUIRED. The strongest evidence in
+  // this strategy: real wallets accumulating real size, not just a chart
+  // pattern. A technical setup with no qualifying on-chain confirmation
+  // never opens a position (see onchain/entryTrigger.ts). Confirmation
+  // tiers (src/onchain/entryTrigger.ts):
+  //   Tier A: >= 2 mutually-unconnected qualifying wallets.
+  //   Tier B: exactly 1 qualifying wallet, but it must additionally clear a
+  //     raised bar (reputation >= neutral AND >= soloConfirmationMinPriorTrades
+  //     prior trades) to compensate for having no independent corroboration.
+  minBuyPctOfLiquidity: number; // buy must be >= this % of current pool liquidity to count as real size, not dust
+  maxBuyPctOfLiquidity: number; // buys above this % are treated as manipulation risk, not conviction
   minWalletAgeDays: number;
-  minWalletPriorTrades: number;
+  minWalletPriorTrades: number; // base per-wallet bar (applies to every candidate, including Tier A wallets)
+  soloConfirmationMinPriorTrades: number; // raised bar a LONE confirming wallet must clear for Tier B
   confirmationWindowHours: number;
-  minConfirmingWallets: number;
+  minConfirmingWallets: number; // absolute floor on confirmed wallets to fire at all (1 permits Tier B; 2 would disable it)
 
   // ATR-based stop
   atrPeriod: number;
@@ -58,11 +68,13 @@ export interface TokenConfig extends StrategyConfig {
 }
 
 export interface RiskConfig {
-  riskPctPerTrade: number; // % of account risked per trade -- drives position size, not a flat $ amount
+  riskPctPerTrade: number; // % of account risked per trade for a Tier A (2+ wallet) entry
+  riskPctPerTradeTierB: number; // % risked for a Tier B (single-wallet, raised-bar) entry -- smaller bet on weaker evidence
   maxPositionSizePct: number; // hard ceiling on position size regardless of stop distance
   dailyLossLimitPct: number; // halt new entries for the rest of the UTC day
   weeklyLossLimitPct: number; // halt entirely, sticky until manually resumed
   consecutiveLossLimit: number; // halt entirely, sticky until manually resumed
+  maxConcurrentPositions: number; // hard cap on simultaneously open positions -- checked before every new entry
 }
 
 /**
@@ -76,7 +88,8 @@ export interface WatchlistSourceConfig {
   mode: "static" | "top_traded";
   topTradedCount: number;
   refreshIntervalHours: number;
-  minLiquidityUsd: number; // filters out illiquid/likely-wash-traded tokens even if volume ranks them highly
+  minLiquidityUsd: number; // filters out illiquid/likely-wash-traded tokens even if volume ranks them highly -- enforced at selection time AND re-checked at entry time
+  minTokenAgeHours: number; // excludes pools younger than this from dynamic selection -- the most manipulable, least statistically meaningful class of token
 }
 
 export interface WatchlistConfig {

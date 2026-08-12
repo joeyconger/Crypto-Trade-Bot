@@ -60,7 +60,11 @@ export async function resolveWatchlistTokens(config: WatchlistConfig): Promise<T
   setWatchlistAttempt(new Date().toISOString(), null);
 
   try {
-    const topTraded = await getTopTradedTokens(config.watchlistSource.topTradedCount, config.watchlistSource.minLiquidityUsd);
+    const topTraded = await getTopTradedTokens(
+      config.watchlistSource.topTradedCount,
+      config.watchlistSource.minLiquidityUsd,
+      config.watchlistSource.minTokenAgeHours,
+    );
     if (topTraded.length === 0) {
       throw new Error("provider returned zero top-traded tokens above the liquidity floor");
     }

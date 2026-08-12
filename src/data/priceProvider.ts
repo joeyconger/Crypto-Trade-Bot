@@ -15,5 +15,5 @@ export const getOhlcv: (address: string, swingLookbackHours: number, timeFrom: n
   provider.getOhlcv;
 export const getTokenOverview: (address: string) => Promise<TokenOverview> = provider.getTokenOverview;
 export const getMultiPrice: (addresses: string[]) => Promise<Map<string, number>> = provider.getMultiPrice;
-export const getTopTradedTokens: (count: number, minLiquidityUsd: number) => Promise<TopTradedToken[]> =
+export const getTopTradedTokens: (count: number, minLiquidityUsd: number, minTokenAgeHours: number) => Promise<TopTradedToken[]> =
   provider.getTopTradedTokens;

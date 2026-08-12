@@ -27,6 +27,7 @@ function baseTrade(overrides: Partial<TradeRow> = {}): TradeRow {
     scale_out_2_done: 0,
     runner_active: 0,
     time_exit_deadline: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
+    confluence_tier: "A",
     reason: "test",
     tx_signature: null,
     exit_price: null,

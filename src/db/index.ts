@@ -275,6 +275,7 @@ export interface TradeRow {
   scale_out_2_done: number;
   runner_active: number;
   time_exit_deadline: string;
+  confluence_tier: "A" | "B";
   reason: string | null;
   tx_signature: string | null;
   exit_price: number | null;
@@ -303,6 +304,7 @@ export interface PlannedTradeInput {
   extension1618Price: number;
   stopPrice: number;
   timeExitDeadline: string;
+  confluenceTier: "A" | "B";
   reason: string;
 }
 
@@ -321,13 +323,13 @@ export function insertTrade(input: NewTradeInput): number {
         entry_price, quantity, quantity_remaining, usd_size,
         swing_high, swing_low, fib_zone_level, atr_at_entry,
         extension_1272_price, extension_1618_price, stop_price,
-        time_exit_deadline, reason, tx_signature
+        time_exit_deadline, confluence_tier, reason, tx_signature
       ) VALUES (
         @tokenAddress, @tokenSymbol, @mode, 'buy', 'open',
         @entryPrice, @quantity, @quantity, @usdSize,
         @swingHigh, @swingLow, @fibZoneLevel, @atrAtEntry,
         @extension1272Price, @extension1618Price, @stopPrice,
-        @timeExitDeadline, @reason, @txSignature
+        @timeExitDeadline, @confluenceTier, @reason, @txSignature
       )`,
     )
     .run({ ...input, txSignature: input.txSignature ?? null });
@@ -337,6 +339,12 @@ export function insertTrade(input: NewTradeInput): number {
 
 export function getOpenTrades(): TradeRow[] {
   return getDb().prepare(`SELECT * FROM trades WHERE status = 'open' ORDER BY opened_at DESC`).all() as TradeRow[];
+}
+
+/** Cheap count-only query for the concurrent-position cap check -- no need to materialize full rows. */
+export function getOpenPositionCount(mode: "paper" | "live"): number {
+  const row = getDb().prepare(`SELECT COUNT(*) as n FROM trades WHERE status = 'open' AND mode = ?`).get(mode) as { n: number };
+  return row.n;
 }
 
 /**

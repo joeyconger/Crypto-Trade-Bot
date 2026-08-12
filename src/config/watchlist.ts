@@ -21,12 +21,15 @@ const strategyConfigSchema = z.object({
   volumeAvgPeriod: z.number().int().positive(),
   volumeConfirmationMultiplier: z.number().positive(),
 
-  minBuyUsd: z.number().positive(),
+  minBuyPctOfLiquidity: z.number().positive().max(100),
   maxBuyPctOfLiquidity: z.number().positive().max(100),
   minWalletAgeDays: z.number().nonnegative(),
   minWalletPriorTrades: z.number().int().nonnegative(),
+  soloConfirmationMinPriorTrades: z.number().int().nonnegative().default(3),
   confirmationWindowHours: z.number().positive(),
-  minConfirmingWallets: z.number().int().min(2, "independent confirmation requires at least 2 wallets"),
+  // 1 permits a Tier B (single-wallet, raised-bar) entry to fire on its own;
+  // set to 2 to require Tier A (independent confirmation) for every entry.
+  minConfirmingWallets: z.number().int().min(1, "at least 1 confirming wallet is required -- on-chain confluence is a mandatory gate"),
 
   atrPeriod: z.number().int().positive(),
   stopAtrMultiplier: z.number().positive(),
@@ -38,9 +41,12 @@ const strategyConfigSchema = z.object({
 
   timeExitHours: z.number().positive(),
 
-  // Default of 4h keeps a 100-token dynamic watchlist's OHLCV cost bounded
-  // regardless of poll interval -- see engine/loop.ts's due-token throttle.
-  technicalRefreshIntervalMinutes: z.number().positive().default(240),
+  // How often (in minutes) a token with no open position gets a fresh OHLCV
+  // fetch + full re-evaluation. Should match the token's actual candle
+  // interval (see pickTimeframe/pickOhlcvInterval) -- scanning slower than
+  // one candle period means missing most valid Condition-6 close events
+  // regardless of how permissive every other filter is.
+  technicalRefreshIntervalMinutes: z.number().positive().default(15),
 });
 
 const tokenConfigSchema = strategyConfigSchema.extend({
@@ -51,10 +57,12 @@ const tokenConfigSchema = strategyConfigSchema.extend({
 
 const riskConfigSchema = z.object({
   riskPctPerTrade: z.number().positive().max(100),
+  riskPctPerTradeTierB: z.number().positive().max(100).default(0.5),
   maxPositionSizePct: z.number().positive().max(100),
   dailyLossLimitPct: z.number().positive().max(100),
   weeklyLossLimitPct: z.number().positive().max(100),
   consecutiveLossLimit: z.number().int().positive(),
+  maxConcurrentPositions: z.number().int().positive().default(6),
 });
 
 const watchlistSourceConfigSchema = z.object({
@@ -62,6 +70,7 @@ const watchlistSourceConfigSchema = z.object({
   topTradedCount: z.number().int().positive().default(100),
   refreshIntervalHours: z.number().positive().default(24),
   minLiquidityUsd: z.number().nonnegative().default(50000),
+  minTokenAgeHours: z.number().nonnegative().default(24),
 });
 
 const watchlistConfigSchema = z.object({
@@ -72,6 +81,7 @@ const watchlistConfigSchema = z.object({
     topTradedCount: 100,
     refreshIntervalHours: 24,
     minLiquidityUsd: 50000,
+    minTokenAgeHours: 24,
   }),
   defaultStrategy: strategyConfigSchema.optional(),
 });
@@ -87,6 +97,9 @@ function validateStrategy(strategy: StrategyConfig, label: string): void {
   }
   if (strategy.rsiOverboughtCeiling <= strategy.rsiMidline) {
     throw new Error(`${label}: rsiOverboughtCeiling must be greater than rsiMidline`);
+  }
+  if (strategy.minBuyPctOfLiquidity >= strategy.maxBuyPctOfLiquidity) {
+    throw new Error(`${label}: maxBuyPctOfLiquidity must be greater than minBuyPctOfLiquidity`);
   }
 }
 

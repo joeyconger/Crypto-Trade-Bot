@@ -395,6 +395,8 @@
   .pill.buy, .pill.yes { color: var(--good); background: var(--good-soft); }
   .pill.sell, .pill.no { color: var(--critical); background: var(--critical-soft); }
   .pill.none { color: var(--text-muted); background: var(--surface-2); }
+  .pill.tierA { color: var(--good); background: var(--good-soft); }
+  .pill.tierB { color: var(--accent-strong); background: var(--accent-soft); }
 
   .empty {
     padding: 36px;
@@ -462,7 +464,7 @@
     <div class="card kpi">
       <div class="label">Open positions</div>
       <div class="value" id="kpiPositions">&mdash;</div>
-      <div class="sub" id="kpiPositionsSub">uncapped</div>
+      <div class="sub" id="kpiPositionsSub">&nbsp;</div>
     </div>
     <div class="card kpi">
       <div class="label">Watchlist</div>
@@ -483,7 +485,7 @@
       <table>
         <thead>
           <tr>
-            <th>Token</th><th>Avg entry</th><th>Avg exit</th><th>Size</th><th>P&amp;L</th>
+            <th>Token</th><th>Tier</th><th>Avg entry</th><th>Avg exit</th><th>Size</th><th>P&amp;L</th>
             <th>Tranches</th><th>Opened</th><th>Closed</th><th class="reason">Reason</th>
           </tr>
         </thead>
@@ -648,7 +650,10 @@
     weeklyFill.className = "fill " + (s.risk.weeklyPnlUsd < 0 && weeklyPct >= 100 ? "danger" : s.risk.weeklyPnlUsd < 0 && weeklyPct > 60 ? "warn" : "");
 
     document.getElementById("kpiPositions").textContent = s.openPositionsCount;
-    document.getElementById("kpiPositionsSub").textContent = `${s.risk.consecutiveLosses}/${s.risk.consecutiveLossLimit} loss streak`;
+    const maxPositions = s.risk.maxConcurrentPositions;
+    document.getElementById("kpiPositionsSub").textContent =
+      (maxPositions != null ? `${s.openPositionsCount}/${maxPositions} cap · ` : "") +
+      `${s.risk.consecutiveLosses}/${s.risk.consecutiveLossLimit} loss streak`;
 
     const wl = s.watchlist || {};
     document.getElementById("kpiWatchlist").textContent = wl.total != null ? wl.total : "—";
@@ -675,7 +680,7 @@
     document.getElementById("positionsGrid").innerHTML = rows.map((p) => `
       <div class="card position-card">
         <div class="head">
-          <span class="sym">${esc(p.token_symbol)}</span>
+          <span class="sym">${esc(p.token_symbol)} ${p.confluence_tier ? `<span class="pill tier${p.confluence_tier}">Tier ${p.confluence_tier}</span>` : ""}</span>
           ${pnlSpan(p.unrealizedPnlUsd, p.unrealizedPnlPct).replace('<span class="', '<span class="pnl ')}
         </div>
         <div class="price-row">entry ${fmtPrice(p.entry_price)} &rarr; now ${fmtPrice(p.currentPrice)} &middot; ${fmtQty(p.quantity_remaining)} / ${fmtQty(p.quantity)} left &middot; ${fmtUsd(p.usd_size)}</div>
@@ -698,6 +703,7 @@
     document.getElementById("tradesBody").innerHTML = rows.map((t) => `
       <tr>
         <td class="sym">${esc(t.token_symbol)}</td>
+        <td>${t.confluence_tier ? `<span class="pill tier${t.confluence_tier}">Tier ${t.confluence_tier}</span>` : "—"}</td>
         <td>${fmtPrice(t.entry_price)}</td>
         <td>${fmtPrice(t.exit_price)}</td>
         <td>${fmtUsd(t.usd_size)}</td>
@@ -718,8 +724,9 @@
       let detail = "";
       try {
         const d = JSON.parse(s.detail || "{}");
-        detail = d.skipReason || d.blockedBy || d.technicalReason || d.error ||
-          (d.confirmingWallets && d.confirmingWallets.length ? `wallets: ${d.confirmingWallets.map(fmtWallet).join(", ")}` : "") || "";
+        const tierNote = d.tier ? `[Tier ${d.tier}] ` : "";
+        detail = tierNote + (d.skipReason || d.blockedBy || d.technicalReason || d.error ||
+          (d.confirmingWallets && d.confirmingWallets.length ? `wallets: ${d.confirmingWallets.map(fmtWallet).join(", ")}` : "") || "");
       } catch {}
       return `
       <tr>

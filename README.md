@@ -1,20 +1,21 @@
 # Vibes & Fibs
 
-An autonomous Solana trading bot with a strict, structure-based strategy: a
-**technical setup is the entry gate on its own** -- it does not need a big
-wallet buying alongside it -- and **on-chain wallet confirmation is optional
-confluence**, logged against a trade and folded into its reason when it
-happens to coincide, but never required and never blocking when it's absent.
-Exits are managed with ATR-based stops and a scaled, structure-trailing
-take-profit. Ships in **paper trading mode by default** -- live trading is an
-explicit, double-gated opt-in.
+An autonomous Solana trading bot with a strict, evidence-based strategy: a
+technical setup narrows down entry *timing*, but **on-chain wallet
+confirmation is the required gate that actually fires an entry**
+(`src/onchain/entryTrigger.ts`) -- real wallets accumulating real size is the
+strongest signal this strategy has, not an optional add-on. A technical
+setup with no qualifying on-chain confirmation never opens a position; there
+is no technical-only path. Exits are managed with ATR-based stops and a
+scaled, structure-trailing take-profit. Ships in **paper trading mode by
+default** -- live trading is an explicit, double-gated opt-in.
 
 ## Strategy
 
-### Entry (all technical conditions required; on-chain confluence is optional)
+### Entry -- two required gates
 
-**The technical trigger (`src/signals/technicalTrigger.ts`) is the entry
-gate**, and it fires on its own -- no wallet activity required:
+**Conditions 1-6 (technical, `src/signals/technicalTrigger.ts`) narrow WHEN
+to look.** All six required, none of them sufficient alone:
 
 1. **Trend context** -- price above the `trendSmaPeriod` SMA (don't fight the
    trend), and not choppy (fewer than `chopMaxCrossings` MA crossings in the
@@ -40,22 +41,41 @@ gate**, and it fires on its own -- no wallet activity required:
 A confirmed downtrend is a hard no regardless of the above: this is a
 long-only bot, so it doesn't chase bounces in a structure that's still falling.
 
-**On-chain wallet confirmation is evaluated independently as confluence, not
-a gate** (`src/onchain/entryTrigger.ts`): >= `minConfirmingWallets` separate,
-mutually-unconnected wallets each buying >= `minBuyUsd` and <=
-`maxBuyPctOfLiquidity`% of pool liquidity, >= `minWalletAgeDays` old with
-prior history, untagged, and with a clean local reputation (no dump within
-24h across their last 5 observed buys -- starts neutral, builds up from what
-the bot itself observes). When this coincides with a fired technical trigger,
-it's recorded against the trade (`trade_signal_wallets`) and noted in the
-trade's reason; when it's absent, or the Helius lookup itself fails, the
-technical trigger still fires the trade on its own.
+**Condition 7 (on-chain confluence, REQUIRED) is what actually fires an
+entry.** Two ways it can fire, sized differently (see Position sizing below):
+
+- **Tier A** -- >= 2 separate, mutually-unconnected wallets each buying >=
+  `minBuyPctOfLiquidity`% and <= `maxBuyPctOfLiquidity`% of current pool
+  liquidity, >= `minWalletAgeDays` old with >= `minWalletPriorTrades` prior
+  trades, and a clean local reputation (no dump within 24h across their last
+  5 observed buys -- starts neutral, builds up from what the bot itself
+  observes), all within `confirmationWindowHours`. The mutual-unconnectedness
+  check (a heuristic for a direct on-chain transaction between two wallets --
+  not full funding-graph analysis) only runs when there are 2+ qualifying
+  candidates to compare.
+- **Tier B** -- exactly 1 qualifying wallet, but it must clear a *raised* bar
+  to compensate for having no independent corroboration: reputation >=
+  neutral **and** >= `soloConfirmationMinPriorTrades` prior trades (higher
+  than the base `minWalletPriorTrades` every candidate needs).
+
+If neither tier fires, the setup is skipped no matter how clean the technical
+picture looks -- logged to `signal_log` with the specific reason either way.
 
 ### Position sizing
 
-Risk-based, not a flat dollar amount: `size = (account x riskPctPerTrade) /
-(entry - stop)`, hard-capped at `maxPositionSizePct` of the account regardless
-of stop distance. No cap on concurrent open positions.
+Risk-based, not a flat dollar amount: `size = (account x riskPct) / (entry -
+stop)`, hard-capped at `maxPositionSizePct` of the account regardless of stop
+distance. `riskPct` depends on which confluence tier fired the entry --
+`riskPctPerTrade` (1% default) for Tier A, the smaller `riskPctPerTradeTierB`
+(0.5% default) for Tier B, so a marginal single-wallet setup is sized down
+rather than bet the same amount as a well-corroborated one. The tier is
+stored on the trade record and shown on the dashboard.
+
+Concurrent open positions are hard-capped at `maxConcurrentPositions` (6
+default), checked before every new entry -- the daily/weekly circuit
+breakers below only gate *new* entries and wouldn't trip until a meaningful
+chunk of loss is already realized across many simultaneously-open positions
+in a correlated selloff; this cap bounds that exposure directly.
 
 ### Stop loss
 
@@ -83,6 +103,12 @@ trade's proven itself and the runner is never time-limited.
 
 If any of *this trade's own confirming wallets* sells the token, that's an
 immediate full close, regardless of where price sits relative to stop/targets.
+Since on-chain confluence is now a required gate, every trade has at least
+one tracked confirming wallet -- this override went from a near-permanent
+no-op (only applied to the rare trade that happened to also have on-chain
+confluence) to active on every single trade. That's a meaningful risk
+reduction versus the technical-only-entry version of this strategy: a
+confirming wallet dumping is now always a live signal, not just sometimes.
 
 ### Account-level circuit breakers
 
@@ -109,33 +135,34 @@ already open, just because new risk is paused, would be the wrong kind of
   [`@solana/web3.js`](https://github.com/anza-xyz/solana-web3.js) and the
   [Jupiter Swap API](https://dev.jup.ag/docs/swap-api/).
 - **Data**: [Helius](https://helius.dev) for RPC + wallet activity/reputation,
-  [Birdeye](https://birdeye.so) for OHLCV price candles and liquidity. See
-  [Why Helius *and* Birdeye](#why-helius-and-birdeye) below.
+  GeckoTerminal (default) or Birdeye for OHLCV price candles and liquidity.
+  See [Price/OHLCV data provider](#priceohlcv-data-provider-birdeye-or-geckoterminal)
+  and [Why Helius *and* Birdeye](#why-helius-and-birdeye) below.
 - **Storage**: SQLite via `better-sqlite3` (`data/bot.sqlite`, gitignored).
 - **Dashboard**: a single Express service serves both the poll loop and a
   web dashboard (`src/dashboard/`) on one process -- one Railway deployment.
 
 ```
 config/watchlist.yaml       -- tokens + per-token strategy params (edit freely, no code changes)
-config/known-wallets.yaml   -- exchange/bridge/market-maker denylist (user-maintained, ships empty)
         |
         v
-src/engine/loop.ts           -- polls on an interval, per enabled token:
+src/engine/loop.ts           -- planScan splits due tokens into a priority lane
+        |                        (open positions + pinned) and a budgeted, spread
+        |                        dynamic lane, per poll tick:
         |
-        +--> src/signals/technicalTrigger.ts   (the entry gate -- trend, fib+structural
-        |      +--> src/signals/fib.ts              confluence, RSI, volume, close confirmation)
-        |      +--> src/signals/sma.ts
-        |      +--> src/signals/rsi.ts
+        +--> src/signals/technicalTrigger.ts   (Conditions 1-6 -- entry TIMING, not
+        |      +--> src/signals/fib.ts              sufficient alone: trend, fib+structural
+        |      +--> src/signals/sma.ts               confluence, RSI, volume, close confirmation)
         |      +--> src/signals/atr.ts               (ATR(14), Wilder's smoothing, for the stop)
         |
         +--> src/onchain/walletActivity.ts    (records every observed buy/sell)
-        +--> src/onchain/entryTrigger.ts      (OPTIONAL confluence, never blocking --
+        +--> src/onchain/entryTrigger.ts      (Condition 7 -- REQUIRED, Tier A/B --
                +--> src/onchain/walletReputation.ts    candidates -> independent confirmation)
-               +--> src/onchain/walletConnectivity.ts  (heuristic: are two wallets connected?)
+               +--> src/onchain/walletConnectivity.ts  (heuristic, only when 2+ candidates: are two wallets connected?)
         |
         v
-src/execution/positionSizing.ts   -- risk-based size, ATR stop
-src/execution/circuitBreakers.ts  -- daily/weekly/consecutive-loss halts
+src/execution/positionSizing.ts   -- risk-based size (tier-dependent), ATR stop
+src/execution/circuitBreakers.ts  -- daily/weekly/consecutive-loss halts (maxConcurrentPositions checked in loop.ts, before circuit breakers even run)
 src/execution/exitManager.ts      -- signal reversal, stop, scale-outs, trailing, time exit (pure decision)
         |
         +--> paper mode: src/execution/paperTrading.ts  (simulated fills)
@@ -226,18 +253,32 @@ the bot automatically uses Helius's RPC instead of the public one.
 
 ### Known limitations in the on-chain confluence check (flagged, not hidden)
 
-- **`config/known-wallets.yaml` ships empty.** There's no reliable free API
-  that labels Solana wallets as exchange/bridge/market-maker, and hot wallets
-  rotate over time -- a wrong guessed address would give false confidence in
-  a safety-relevant filter, which is worse than no list at all. Populate it
-  yourself from a source you trust (Solscan's labels, your own observation).
+- **There is no exchange/bridge/market-maker wallet exclusion list.** This
+  used to be a `config/known-wallets.yaml` denylist that shipped permanently
+  empty. I could not verify from this sandbox (no live network access)
+  whether Helius' or Birdeye's/GeckoTerminal's current free/standard-tier
+  endpoints expose a wallet-level labeling API -- rather than guess and
+  hand-build a list from memory (the same risk this project avoids
+  everywhere: a wrong guess creates false confidence in a safety-relevant
+  filter), the check and its config file were removed entirely. A filter
+  that looks active but never excludes anything is worse than no filter. If
+  you find and verify a real labeling source, `src/onchain/walletReputation.ts`
+  is where to reintroduce it.
 - **Wallet "connectedness" is a direct-transaction heuristic**, not a full
   funding-graph walk: it catches one wallet directly funding another's gas or
   sending it tokens, not a laundered multi-hop relationship. True graph
-  analysis needs far more API budget than a free tier supports.
+  analysis needs far more API budget than a free tier supports. It only runs
+  at all when 2+ qualifying candidates exist to compare (Tier A) -- Tier B's
+  lone wallet has nothing to check connectivity against.
 - **Wallet age is a bounded history lookup**, not a real creation timestamp
   (Solana accounts don't have one) -- a proxy that's accurate enough for a
   ">= N days" filter but isn't exact for very old, very active wallets.
+- **Tier B (single-wallet confirmation) is inherently weaker evidence than
+  Tier A**, even with its raised bar -- that's exactly why it's sized down
+  (`riskPctPerTradeTierB`) rather than blocked outright. If backtesting or
+  live results show Tier B trades are net negative after fees, the right
+  move is to drop Tier B (set `minConfirmingWallets: 2`) rather than keep it
+  for trade volume.
 
 ## Configuring the watchlist
 
@@ -250,27 +291,28 @@ tokens:
     address: DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263
     enabled: true
 
-    fibPivotWindow: 3
-    goldenPocketZonePct: 2.5
+    fibPivotWindow: 2
+    goldenPocketZonePct: 4
     swingLookbackHours: 96
 
-    trendSmaPeriod: 20
+    trendSmaPeriod: 15
     chopLookbackPeriods: 15
-    chopMaxCrossings: 6
+    chopMaxCrossings: 9
 
     rsiPeriod: 14
-    rsiMidline: 60
-    rsiOverboughtCeiling: 78
+    rsiMidline: 65
+    rsiOverboughtCeiling: 85
 
     volumeAvgPeriod: 15
-    volumeConfirmationMultiplier: 1.2
+    volumeConfirmationMultiplier: 1.0
 
-    minBuyUsd: 5000
+    minBuyPctOfLiquidity: 1.5
     maxBuyPctOfLiquidity: 3
-    minWalletAgeDays: 14
+    minWalletAgeDays: 7
     minWalletPriorTrades: 1
-    confirmationWindowHours: 4
-    minConfirmingWallets: 2
+    soloConfirmationMinPriorTrades: 3
+    confirmationWindowHours: 12
+    minConfirmingWallets: 1
 
     atrPeriod: 14
     stopAtrMultiplier: 1
@@ -281,17 +323,23 @@ tokens:
     scaleOutPct2: 33
 
     timeExitHours: 48
+    technicalRefreshIntervalMinutes: 5
 
 risk:
   riskPctPerTrade: 1
+  riskPctPerTradeTierB: 0.5
   maxPositionSizePct: 10
   dailyLossLimitPct: 3
   weeklyLossLimitPct: 8
   consecutiveLossLimit: 4
+  maxConcurrentPositions: 6
 ```
 
-These defaults have been loosened twice now, both times because the tighter
-values essentially never fired on BONK/WIF in practice:
+### Revision history and rationale
+
+The technical thresholds (Conditions 1-6) were loosened twice early on,
+both times because the tighter starting values essentially never fired on
+BONK/WIF in practice:
 
 | param | original | loosened once | current |
 |---|---|---|---|
@@ -303,19 +351,39 @@ values essentially never fired on BONK/WIF in practice:
 | `volumeConfirmationMultiplier` | n/a | 1.2x | 1.0x (no spike required) |
 | `fibPivotWindow` | n/a | 3 | 2 |
 
-At the current settings, every condition is about as permissive as it can be
-without removing it outright: a 15-period SMA on hourly candles is a
-~15-hour lookback, the golden pocket zone is 8x wider than a standard 0.5%
-target, up to 9 MA crossings in 15 candles is close to pure chop, RSI just
-needs to be turning up anywhere below 65, and the reaction candle no longer
-needs above-average volume at all. If a trade still doesn't fire within a
-few days at these settings, the bottleneck is more likely the underlying
-data (a Birdeye field not populating as expected, `swingLookbackHours` not
-returning enough candles for the chosen `pickOhlcvInterval`, etc.) than the
-threshold values themselves -- check `signal_log`'s `detail` column for the
-specific condition that's failing before loosening further, since past this
-point the technical trigger stops meaningfully filtering for a real setup at
-all.
+At these settings, Conditions 1-6 are about as permissive as they can be
+without removing them outright -- this was deliberately left unchanged in
+the on-chain-gate revision below, since low trade frequency traced back to
+the scan cadence and the on-chain gate's own thresholds, not these.
+
+**The bigger revision**: on-chain confluence went from optional/non-blocking
+confluence to a **required** entry gate (restoring the strategy's original
+premise that on-chain evidence is the strongest signal, technical is a
+timing filter), while its own thresholds were loosened in the same change
+since they'd never been exercised as a hard gate before:
+
+| param | before (optional confluence) | now (required gate) |
+|---|---|---|
+| `confirmationWindowHours` | 4 | 12 -- real accumulation rarely clusters into a tight burst |
+| buy-size filter | flat `minBuyUsd: $5,000` | `minBuyPctOfLiquidity: 1.5%` -- a flat $ bar is trivial on a $5M pool, unreachable on a $60k one |
+| `minWalletAgeDays` | 14 | 7 -- still excludes freshly-funded bundler-pattern wallets |
+| `minConfirmingWallets` | 2 (hard requirement) | 1, via the Tier A/B split below |
+
+Instead of one pass/fail bar, confirmation now has two tiers (see
+[Position sizing](#position-sizing)) so the bot can take a marginal,
+single-wallet setup without betting the same amount on it as a
+well-corroborated one: **Tier A** keeps the original >=2-mutually-unconnected
+requirement at full size; **Tier B** allows exactly 1 wallet but only if it
+clears a raised bar (`soloConfirmationMinPriorTrades: 3`, neutral-or-better
+reputation) and is sized down to `riskPctPerTradeTierB`.
+
+If a trade still doesn't fire within a few days at these settings, check
+`signal_log`'s `detail` column for the specific condition that's failing
+(technical or on-chain) before loosening further -- and check the
+"watchlist cadence" log line (`engine/loop.ts`) to confirm the dynamic
+watchlist is actually being scanned close to once per candle period, not
+silently falling behind, since that was the single biggest driver of low
+trade frequency before this revision, not the evidence thresholds.
 
 `scaleOutPct1 + scaleOutPct2` must leave a remainder for the runner, and
 `extensionRatio2` must exceed `extensionRatio1` (both validated at load
@@ -325,11 +393,11 @@ time). `risk` applies globally across all tokens.
 
 Instead of (or alongside) hand-picking tokens, `watchlistSource.mode:
 top_traded` trades the top `topTradedCount` tokens by 24h volume on Solana,
-re-selected from Birdeye's tokenlist every `refreshIntervalHours`, each using
-the shared `defaultStrategy` block (individually hand-tuning 100 tokens
-isn't realistic). The `tokens` list still rides along as an always-included
-pin list on top of the dynamic selection -- BONK/WIF stay pinned with their
-own params in the shipped config even with `top_traded` enabled.
+re-selected every `refreshIntervalHours`, each using the shared
+`defaultStrategy` block (individually hand-tuning 100 tokens isn't
+realistic). The `tokens` list still rides along as an always-included pin
+list on top of the dynamic selection -- BONK/WIF stay pinned with their own
+params in the shipped config even with `top_traded` enabled.
 
 ```yaml
 watchlistSource:
@@ -337,72 +405,78 @@ watchlistSource:
   topTradedCount: 100
   refreshIntervalHours: 24
   minLiquidityUsd: 50000
+  minTokenAgeHours: 24 # excludes pools younger than this -- the most manipulable, least statistically meaningful class of token
 
 defaultStrategy:
   # same fields as a token entry, minus symbol/address/enabled
   ...
-  technicalRefreshIntervalMinutes: 240
+  technicalRefreshIntervalMinutes: 15
 ```
 
-A failed refresh (Birdeye down, rate-limited, etc.) falls back to the last
+A failed refresh (provider down, rate-limited, etc.) falls back to the last
 successful selection rather than leaving the bot with zero tokens.
 
-**Keeping this within a free-tier Birdeye budget (e.g. 30k calls/month).**
-The technical trigger needs a fresh OHLCV fetch per token to evaluate fib/
-RSI/volume/close conditions -- that's the unavoidable cost of running 100
-tokens through a real technical strategy, and it doesn't shrink just because
-current price got cheaper to fetch. What *does* shrink it:
+**Scan cadence has to match the candle interval, not just fit a budget.**
+Condition 6 (confirmed close) is a per-candle event -- the dynamic tokens use
+15-minute candles, so `technicalRefreshIntervalMinutes: 15` is what it takes
+to actually catch most valid setups instead of silently missing the large
+majority of them by scanning less often than one candle period. The earlier
+version of this bot set it to 240 (4h) specifically to fit Birdeye's monthly
+call quota; that reasoning doesn't carry over to GeckoTerminal (the default
+provider), which has no monthly quota, just a per-minute rate limit -- so the
+real question became "can 100 tokens be scanned every 15 minutes without
+bursting past that per-minute limit," not "how rarely can we get away with
+scanning."
 
-- **Batched pricing.** Current price (needed for wallet-activity sizing,
-  position management, and the entry check itself) is fetched for the whole
-  due-batch in one Birdeye `multi_price` call instead of one
-  `token_overview` call per token per cycle.
-- **Per-token throttling, decoupled from poll interval.** Each token only
-  gets a fresh OHLCV fetch + technical re-evaluation once every
-  `technicalRefreshIntervalMinutes` (240 = 4h by default for the dynamic
-  100), tracked per-token in the DB (`watchlist_tokens.last_technical_eval_at`)
-  -- not once per poll cycle. `POLL_INTERVAL_SECONDS` just controls how often
-  the bot *checks whether anything is due*, which is cheap; it no longer
-  determines how often 100 tokens actually get scanned. A token with an open
-  position is always managed every poll cycle regardless (stop/trailing
-  tracking needs to stay current) -- that cost scales with how many
-  positions are open, not watchlist size.
-- **Lazy liquidity lookups.** The optional on-chain-confluence check needs
-  pool liquidity, but only for tokens whose technical trigger already fired
-  that cycle -- so `token_overview` (for liquidity) is only called on an
-  actual signal, not for the whole watchlist every cycle.
-- **Open positions only fetch candles once the runner is active.** Stop-loss,
-  scale-out targets, and the time exit are all plain price comparisons --
-  `decideExitAction` only reads OHLCV history for the runner's
-  structure-trailing stop, which only exists after both scale-outs have
-  fired. An open position that hasn't reached that stage yet costs zero
-  extra Birdeye calls beyond the batched price it already gets as part of
-  the due-token price fetch.
+**The answer is yes, but not by scanning the due batch as fast as
+possible.** `engine/loop.ts`'s `planScan` splits each cycle into two lanes:
 
-With the shipped defaults (100 dynamic tokens at a 4h technical-scan
-interval + 2 pinned tokens at 1h), that's roughly **~21k Birdeye calls/month**
-baseline -- comfortably under a 30k/month cap. If your real usage (check
-Birdeye's own dashboard after a day or two) comes in under budget, tighten
-`technicalRefreshIntervalMinutes` for faster reaction to new setups; if it's
-over, loosen it or lower `topTradedCount`. The remaining variable is the
-uncapped concurrent-position limit (see below): a period with many
-simultaneous *runner-active* positions (already through both scale-outs, so
-still trailing a live stop) will push usage above this baseline, at one
-OHLCV call per poll cycle per such position for as long as it stays in that
-state.
+- **Priority lane** -- open positions (always managed every cycle; stop/
+  trailing tracking must stay current) plus due pinned tokens (2 by default,
+  trivial cost). Processed promptly with a small fixed gap
+  (`TOKEN_STAGGER_MS`, 2s).
+- **Dynamic lane** -- due tokens from the top-N watchlist, budgeted to
+  `ceil(topTradedCount / ticksPerWindow)` per poll tick (with
+  `POLL_INTERVAL_SECONDS: 60` and a 15-minute window, that's `ceil(100/15) =
+  7` tokens/tick) and sorted oldest-evaluated-first so any backlog
+  self-heals. Instead of a fixed gap, this lane's stagger is computed to
+  spread across ~80% of the tick's full duration -- turning "scan all 100
+  the moment they're due" (a burst hitting ~30 calls/min, the rate-limit
+  ceiling) into "scan ~7 tokens spread across each 60-second tick" (a
+  steady ~7-8 calls/min, about a quarter of the ceiling).
+
+Verified against the actual implementation, not just estimated: with the
+shipped defaults (100 dynamic tokens at 15min + 2 pinned at 5min), this
+comes out to **~11,100 provider calls/day, ~7.7/min sustained** -- logged at
+startup (`estimated price-provider usage`) and reconcilable against
+GeckoTerminal's ~30/min free-tier limit (higher with `GECKOTERMINAL_API_KEY`)
+or Birdeye's monthly quota if `PRICE_PROVIDER=birdeye`. Every cycle also logs
+a **watchlist cadence** line -- due/budgeted dynamic token counts and the
+oldest dynamic token's actual staleness versus the `technicalRefreshIntervalMinutes`
+target, flagged `FALLING BEHIND` if it's slipping -- so whether the whole
+watchlist is really being sampled every candle (not just assumed to be) is
+directly visible in the logs, not something you have to take on faith.
+
+Lazy liquidity lookups and the open-positions-skip-candles-until-runner-active
+optimization (both described in earlier revisions of this doc) are still in
+place and unaffected by the cadence change above -- liquidity is now fetched
+lazily for both its original purpose (the on-chain confluence size check)
+*and* the entry-time re-check (see Priority 3 in the changelog), one fetch
+serving both.
 
 ## Logging & visibility
 
 Every entry evaluation is written to `signal_log` -- including the ones that
-don't lead to a trade -- with whether the technical trigger passed, whether
-on-chain confluence happened to be present, and a detail blob (which
-technical condition failed, skip reason, confirming wallets if any). Every
-trade records its confirming wallets and their reputation at entry
-(`trade_signal_wallets`, empty when the trade fired on technicals alone), and
-every partial exit is its own row in `position_exits` (tranche, price,
-reason, P&L), so a closed trade's full lifecycle -- entry context, each
-scale-out, final close -- is reconstructable from the DB, not just a single
-row's summary. The dashboard's Signal History and per-position cards are a
+don't lead to a trade -- with whether the technical trigger (Conditions 1-6)
+passed, whether on-chain confluence (Condition 7) fired, and a detail blob
+(which condition failed, skip reason, confirming wallets, confluence tier).
+Every trade records its confirming wallets and their reputation at entry
+(`trade_signal_wallets` -- never empty now that on-chain confluence is
+required) and which tier fired it (`trades.confluence_tier`), and every
+partial exit is its own row in `position_exits` (tranche, price, reason,
+P&L), so a closed trade's full lifecycle -- entry context, each scale-out,
+final close -- is reconstructable from the DB, not just a single row's
+summary. The dashboard's Signal History and per-position cards are a
 live view of all of this.
 
 ## Running a multi-day paper trial and keeping the data
@@ -428,6 +502,16 @@ or use `npm run evaluate` / the dashboard's API endpoints (`/api/signals`,
 `/api/trades`) as a lighter-weight read path than pulling the whole DB.
 
 ## Flipping paper -> live
+
+**Don't, until you've run a backtest.** This strategy has never been
+validated against historical data -- a few days of paper trading with few or
+zero fills tells you nothing about whether it has an edge. See
+[Backtesting before live capital](#backtesting-before-live-capital) below
+for the harness and what it can and can't currently validate. If the
+backtest doesn't beat a buy-and-hold baseline net of realistic fees and
+slippage, that's a real answer, not a reason to keep tuning parameters until
+it does -- overfitting to history is the most likely way this ends up
+losing money live while looking great in testing.
 
 Live trading requires all of the following, on purpose -- there's no single
 switch:
@@ -458,6 +542,58 @@ on-chain balance back to SOL, via Jupiter's free `lite-api.jup.ag` tier.
 Quantities are always read back from the chain (not a swap quote's estimate),
 so they stay correct regardless of slippage or partial-exit drift.
 
+## Backtesting before live capital
+
+`npm run backtest -- --days 90 [--tokens addr1,addr2] [--fee-bps 30] [--slippage-bps 100]`
+(`src/backtest/run.ts`) walk-forward replays historical OHLCV candles
+through the exact same pure functions the live bot uses --
+`evaluateTechnicalTrigger`, `computeATR`/`computeInitialStop`,
+`computeFibExtensions`, `decideExitAction` -- fee- and slippage-adjusted, and
+reports trade count, win rate, avg win/loss, net return, max drawdown, and a
+buy-and-hold comparison over the same window. Defaults to the pinned tokens
+in `config/watchlist.yaml` if `--tokens` isn't given.
+
+**Read this before trusting a single number it prints.** The backtest
+simulates **Conditions 1-6 (technical) only.** Condition 7 (on-chain
+confluence) is a **required** gate in the live/paper bot -- a technical
+setup with no qualifying wallet confirmation never opens a position -- and
+it is **not simulated** here. Reproducing it historically would mean
+per-wallet buy/sell data at the exact historical moments being tested, plus
+that wallet's reputation *as of that moment* (using its current reputation
+would be look-ahead bias) -- data this sandbox has no way to fetch and that
+would be expensive to gather even with live access (Helius per-wallet
+history lookups, at volume, across months). Concretely, that means:
+
+- Every backtest trade assumes Condition 7 would *also* have fired. Real
+  trade frequency will be lower than these numbers suggest, likely
+  substantially -- most technical setups never get on-chain confirmation.
+- There is no Tier A/Tier B split in this output, because there's no
+  simulated confirmation to derive a tier from -- every backtest trade is
+  sized at the base `riskPctPerTrade`, not the tier-dependent sizing the
+  live bot actually uses.
+- This is a diagnostic on whether the *technical* filter identifies
+  favorable entry timing, not a validation of the deployed strategy's
+  actual expected performance.
+
+The practical way to validate the FULL strategy, Condition 7 included, is
+**forward paper-trading** -- paper mode runs the exact same code path as
+live (just simulated fills), so its trade set, tiers, and P&L are the real
+ones, accumulating going forward rather than reconstructed from history. Run
+paper mode for a meaningful stretch and treat that data -- not this
+backtest -- as the actual pre-live validation. If you build out historical
+wallet-data collection later, `src/backtest/engine.ts`'s `runBacktest` is
+structured so a real `onchainFired`/`tier` signal could be threaded in
+alongside the technical check without needing to rewrite the simulation
+loop.
+
+This sandbox has no live network access, so every run attempted while
+building this returned a network error -- the harness has not been run
+against real data. Run it yourself somewhere with real network access
+(locally, or a Railway shell) and read the printed numbers with the caveats
+above in mind. If it doesn't beat buy-and-hold net of fees, that's a real
+answer -- don't tune parameters until it does; overfitting to history is the
+likeliest way this ends up losing money live while looking great in testing.
+
 ## Development
 
 ```bash
@@ -466,7 +602,10 @@ npm run typecheck
 npm test                 # node:test -- pure-logic unit tests (fib/ATR math, sizing, exit decisions)
 npm run evaluate          # runs one full poll cycle immediately and exits, without
                            # waiting for POLL_INTERVAL_SECONDS -- useful for
-                           # sanity-checking live Birdeye/Helius responses
+                           # sanity-checking live provider/Helius responses
+npm run backtest          # walk-forward technical-only backtest -- see
+                           # "Backtesting before live capital" above for what
+                           # it does and doesn't validate
 npm run generate-keypair  # creates the bot's own Solana keypair (run yourself, see above)
 ```
 

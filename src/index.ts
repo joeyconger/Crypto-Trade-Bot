@@ -8,15 +8,19 @@ import { getBotKeypair } from "./solana/keypair.js";
 import { getConnection } from "./solana/connection.js";
 
 // Per technical-trigger scan (OHLCV fetch + fib/RSI/volume/close checks) for
-// a token with no open position: one Birdeye OHLCV call, one Helius
-// wallet-activity poll. Price is batched separately via getMultiPrice, so
-// it's amortized across a whole due-batch rather than 1-per-token. Excludes
-// per-cycle checks on tokens with an open position (bounded by how many
-// positions are open, not watchlist size) and occasional on-chain-confluence
-// liquidity lookups (only on a technical-trigger fire).
-const BIRDEYE_OHLCV_CALLS_PER_SCAN = 1;
+// a token with no open position: one price-provider OHLCV call, one Helius
+// wallet-activity poll. Current price is batched separately via
+// getMultiPrice, amortized across a whole due-batch rather than 1-per-token.
+// Excludes per-cycle checks on tokens with an open position (bounded by how
+// many positions are open, not watchlist size) and the liquidity/on-chain
+// lookups Condition 7 needs (only spent on tokens that already cleared
+// Conditions 1-6, a small fraction of all scans).
+const OHLCV_CALLS_PER_SCAN = 1;
 const HELIUS_CALLS_PER_SCAN = 1;
-const MULTI_PRICE_CHUNK_SIZE = 100;
+// GeckoTerminal's multi-token batch caps at 30 addresses/call; Birdeye's is
+// larger (100), so this is the conservative (GeckoTerminal) assumption --
+// accurate for the default provider, an overestimate if running on Birdeye.
+const PRICE_BATCH_CHUNK_SIZE = 30;
 
 interface RefreshBucket {
   count: number;
@@ -26,26 +30,33 @@ interface RefreshBucket {
 function logApiUsageEstimate(buckets: RefreshBucket[]): void {
   const totalTokens = buckets.reduce((sum, b) => sum + b.count, 0);
   let ohlcvPerDay = 0;
-  let multiPricePerDay = 0;
+  let priceBatchPerDay = 0;
   let heliusPerDay = 0;
 
   for (const bucket of buckets) {
     if (bucket.count === 0) continue;
     const scansPerDay = (24 * 60) / bucket.technicalRefreshIntervalMinutes;
-    ohlcvPerDay += bucket.count * scansPerDay * BIRDEYE_OHLCV_CALLS_PER_SCAN;
+    ohlcvPerDay += bucket.count * scansPerDay * OHLCV_CALLS_PER_SCAN;
     heliusPerDay += bucket.count * scansPerDay * HELIUS_CALLS_PER_SCAN;
-    multiPricePerDay += Math.ceil(bucket.count / MULTI_PRICE_CHUNK_SIZE) * scansPerDay;
+    priceBatchPerDay += Math.ceil(bucket.count / PRICE_BATCH_CHUNK_SIZE) * scansPerDay;
   }
 
-  const birdeyePerDay = Math.round(ohlcvPerDay + multiPricePerDay);
+  const providerCallsPerDay = Math.round(ohlcvPerDay + priceBatchPerDay);
   const heliusPerDayRounded = Math.round(heliusPerDay);
+  // What matters for a per-minute-rate-limited provider (GeckoTerminal) is
+  // this sustained rate, not the daily/monthly total -- engine/loop.ts's
+  // per-tick scan budget is specifically what spreads load evenly enough to
+  // make "sustained" the right word instead of "bursty."
+  const sustainedCallsPerMin = providerCallsPerDay / (24 * 60);
 
   console.log(
-    `  estimated API usage: ~${birdeyePerDay.toLocaleString()} Birdeye calls/day (~${Math.round((birdeyePerDay * 30) / 1000)}k/month), ~${heliusPerDayRounded.toLocaleString()} Helius calls/day`,
+    `  estimated price-provider usage: ~${providerCallsPerDay.toLocaleString()}/day, ~${sustainedCallsPerMin.toFixed(1)}/min sustained ` +
+      `(if spread evenly per engine/loop.ts's scan budget) -- ~${Math.round((providerCallsPerDay * 30) / 1000)}k/month`,
   );
   console.log(
-    `    (${totalTokens} tokens, technical scans throttled per-token via technicalRefreshIntervalMinutes -- excludes open-position management and on-chain-confluence lookups; check against your actual plan limits)`,
+    `    (${totalTokens} tokens; check the sustained rate against GeckoTerminal's ~30/min free-tier limit, or the monthly figure against Birdeye's quota if PRICE_PROVIDER=birdeye)`,
   );
+  console.log(`    ~${heliusPerDayRounded.toLocaleString()} Helius calls/day (excludes on-chain confluence's own per-candidate wallet lookups)`);
 }
 
 async function main() {
@@ -76,8 +87,11 @@ async function main() {
   }
 
   console.log(
-    `  risk: ${config.risk.riskPctPerTrade}% per trade, ${config.risk.dailyLossLimitPct}% daily / ${config.risk.weeklyLossLimitPct}% weekly loss limit, ${config.risk.consecutiveLossLimit}-loss streak halt`,
+    `  risk: ${config.risk.riskPctPerTrade}% (Tier A) / ${config.risk.riskPctPerTradeTierB}% (Tier B) per trade, ` +
+      `${config.risk.dailyLossLimitPct}% daily / ${config.risk.weeklyLossLimitPct}% weekly loss limit, ` +
+      `${config.risk.consecutiveLossLimit}-loss streak halt, max ${config.risk.maxConcurrentPositions} concurrent positions`,
   );
+  console.log(`  price provider: ${env.PRICE_PROVIDER}`);
   console.log(`  poll interval: ${env.POLL_INTERVAL_SECONDS}s`);
 
   if (env.liveTradingEnabled) {

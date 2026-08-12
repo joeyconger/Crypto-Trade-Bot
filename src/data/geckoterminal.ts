@@ -196,9 +196,15 @@ const MAX_POOL_PAGES = 20;
  * resolved from the JSON:API `included` side-loaded token entities when
  * present, falling back to parsing the pool's "BASE / QUOTE" name field.
  */
-export async function getTopTradedTokens(count: number, minLiquidityUsd: number): Promise<TopTradedToken[]> {
+export async function getTopTradedTokens(
+  count: number,
+  minLiquidityUsd: number,
+  minTokenAgeHours: number,
+): Promise<TopTradedToken[]> {
   const seen = new Map<string, TopTradedToken>();
   let poolsScanned = 0;
+  let excludedForAge = 0;
+  let missingAgeField = 0;
   let page = 1;
 
   for (; page <= MAX_POOL_PAGES && seen.size < count; page++) {
@@ -227,6 +233,25 @@ export async function getTopTradedTokens(count: number, minLiquidityUsd: number)
       const liquidityUsd = Number(pool?.attributes?.reserve_in_usd ?? 0);
       if (liquidityUsd < minLiquidityUsd) continue;
 
+      // pool_created_at is my best understanding of GeckoTerminal's
+      // documented pool attribute for creation time -- unverified from this
+      // sandbox like everything else in this file. Missing/unparseable is
+      // treated as "too young to trust," not "assume it's fine" -- this is
+      // a risk control, so the safe default on uncertain data is exclusion,
+      // not inclusion. missingAgeField in the summary log below makes it
+      // visible if this field turns out not to exist as expected.
+      const createdAtRaw = pool?.attributes?.pool_created_at;
+      const createdAtMs = createdAtRaw ? new Date(createdAtRaw).getTime() : NaN;
+      if (!Number.isFinite(createdAtMs)) {
+        missingAgeField++;
+        continue;
+      }
+      const ageHours = (Date.now() - createdAtMs) / (1000 * 60 * 60);
+      if (ageHours < minTokenAgeHours) {
+        excludedForAge++;
+        continue;
+      }
+
       const baseTokenId: string | undefined = pool?.relationships?.base_token?.data?.id;
       if (!baseTokenId) continue;
       const address = stripNetworkPrefix(baseTokenId);
@@ -248,7 +273,9 @@ export async function getTopTradedTokens(count: number, minLiquidityUsd: number)
 
   console.log(
     `getTopTradedTokens: found ${seen.size}/${count} unique tokens from ${poolsScanned} pools across ${page - 1} page(s)` +
-      (seen.size < count ? " -- ran out of pages or pools before reaching the target count" : ""),
+      ` (excluded ${excludedForAge} under ${minTokenAgeHours}h old, ${missingAgeField} with no parseable pool_created_at)` +
+      (seen.size < count ? " -- ran out of pages or pools before reaching the target count" : "") +
+      (missingAgeField > poolsScanned / 2 ? " -- WARNING: pool_created_at may not be the right field name, check a raw response" : ""),
   );
 
   return [...seen.values()].slice(0, count);

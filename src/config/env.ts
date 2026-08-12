@@ -39,7 +39,12 @@ const envSchema = z.object({
   // fixed % of this starting balance (not compounding equity) -- simple and
   // predictable for v1.
   PAPER_STARTING_BALANCE_USD: z.coerce.number().positive().default(1000),
-  POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(300),
+  // 60s (not 300s) so the dynamic-watchlist scan budget in engine/loop.ts
+  // can spread ~100 tokens' worth of scanning evenly across each
+  // technicalRefreshIntervalMinutes window instead of lumping it into a
+  // handful of large bursts. Ticks are cheap when nothing's due -- this
+  // doesn't cost extra API calls on its own.
+  POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
 });
 
 export type Env = z.infer<typeof envSchema> & {

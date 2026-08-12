@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/**/*.test.ts",
     "evaluate": "tsx src/scripts/evaluate.ts",
-    "generate-keypair": "tsx src/scripts/generate-keypair.ts"
+    "generate-keypair": "tsx src/scripts/generate-keypair.ts",
+    "backtest": "tsx src/backtest/run.ts"
   },
   "dependencies": {
     "@solana/web3.js": "^1.95.3",
