@@ -110,6 +110,14 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const config = loadWatchlistConfig();
 
+  if (env.PRICE_PROVIDER === "geckoterminal") {
+    console.log(
+      env.GECKOTERMINAL_API_KEY
+        ? "GeckoTerminal API key: set -- using a dedicated rate-limit allowance"
+        : "GeckoTerminal API key: NOT set -- sharing the anonymous rate-limit pool with every other unauthenticated caller worldwide (see data/geckoterminal.ts header comment). This is the most likely cause of a 429 that persists even after retries with backoff.",
+    );
+  }
+
   let tokensToTest: TokenConfig[] = args.addresses
     ? args.addresses.map((address) => {
         const pinned = config.tokens.find((t) => t.address === address);
