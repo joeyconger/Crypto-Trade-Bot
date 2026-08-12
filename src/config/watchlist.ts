@@ -65,10 +65,23 @@ const riskConfigSchema = z.object({
   maxConcurrentPositions: z.number().int().positive().default(6),
 });
 
+// Common USD-pegged stablecoins on Solana -- symbol-matched (case-insensitive),
+// not address-matched, deliberately: getting a symbol wrong in a watchlist
+// curation filter is low-stakes (a stablecoin slips through, or a
+// coincidentally-named token gets excluded from the meme-coin pool -- either
+// way, harmless), unlike guessing a token MINT ADDRESS from memory, which
+// this project avoids everywhere it matters (trading against the wrong
+// contract, or false confidence in a trust filter). Editable below.
+export const DEFAULT_EXCLUDED_STABLECOIN_SYMBOLS = [
+  "USDT", "USDC", "DAI", "USDE", "FDUSD", "TUSD", "USDD", "PYUSD",
+  "USDS", "USDH", "UXD", "USDY", "BUSD", "GUSD", "USDP", "EURC",
+];
+
 const watchlistSourceConfigSchema = z.object({
   mode: z.enum(["static", "top_traded"]).default("static"),
   topTradedCount: z.number().int().positive().default(100),
   refreshIntervalHours: z.number().positive().default(24),
+  excludedSymbols: z.array(z.string()).default(DEFAULT_EXCLUDED_STABLECOIN_SYMBOLS),
   minLiquidityUsd: z.number().nonnegative().default(50000),
   minTokenAgeHours: z.number().nonnegative().default(24),
 });
@@ -80,6 +93,7 @@ const watchlistConfigSchema = z.object({
     mode: "static",
     topTradedCount: 100,
     refreshIntervalHours: 24,
+    excludedSymbols: DEFAULT_EXCLUDED_STABLECOIN_SYMBOLS,
     minLiquidityUsd: 50000,
     minTokenAgeHours: 24,
   }),

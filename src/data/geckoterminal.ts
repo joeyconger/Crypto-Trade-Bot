@@ -200,10 +200,13 @@ export async function getTopTradedTokens(
   count: number,
   minLiquidityUsd: number,
   minTokenAgeHours: number,
+  excludedSymbols: string[] = [],
 ): Promise<TopTradedToken[]> {
+  const excludedSymbolSet = new Set(excludedSymbols.map((s) => s.toUpperCase()));
   const seen = new Map<string, TopTradedToken>();
   let poolsScanned = 0;
   let excludedForAge = 0;
+  let excludedForSymbol = 0;
   let missingAgeField = 0;
   let page = 1;
 
@@ -262,6 +265,11 @@ export async function getTopTradedTokens(
         includedToken?.attributes?.symbol ?? String(pool?.attributes?.name ?? "").split("/")[0]?.trim();
       if (!symbol) continue;
 
+      if (excludedSymbolSet.has(symbol.toUpperCase())) {
+        excludedForSymbol++;
+        continue;
+      }
+
       seen.set(address, {
         symbol,
         address,
@@ -273,7 +281,7 @@ export async function getTopTradedTokens(
 
   console.log(
     `getTopTradedTokens: found ${seen.size}/${count} unique tokens from ${poolsScanned} pools across ${page - 1} page(s)` +
-      ` (excluded ${excludedForAge} under ${minTokenAgeHours}h old, ${missingAgeField} with no parseable pool_created_at)` +
+      ` (excluded ${excludedForAge} under ${minTokenAgeHours}h old, ${excludedForSymbol} stablecoins/excluded symbols, ${missingAgeField} with no parseable pool_created_at)` +
       (seen.size < count ? " -- ran out of pages or pools before reaching the target count" : "") +
       (missingAgeField > poolsScanned / 2 ? " -- WARNING: pool_created_at may not be the right field name, check a raw response" : ""),
   );

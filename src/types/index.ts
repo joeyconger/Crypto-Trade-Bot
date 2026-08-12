@@ -88,6 +88,13 @@ export interface WatchlistSourceConfig {
   mode: "static" | "top_traded";
   topTradedCount: number;
   refreshIntervalHours: number;
+  // Symbols excluded from dynamic selection (case-insensitive) -- default is
+  // common USD-pegged stablecoins, which routinely rank high by volume but
+  // are meaningless targets for a fib-retracement/momentum strategy: a
+  // pegged asset's price barely moves, so the technical conditions have
+  // essentially nothing to fire on. User-editable, not a hardcoded address
+  // list -- see config/watchlist.yaml.
+  excludedSymbols: string[];
   minLiquidityUsd: number; // filters out illiquid/likely-wash-traded tokens even if volume ranks them highly -- enforced at selection time AND re-checked at entry time
   minTokenAgeHours: number; // excludes pools younger than this from dynamic selection -- the most manipulable, least statistically meaningful class of token
 }

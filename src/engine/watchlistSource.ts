@@ -64,6 +64,7 @@ export async function resolveWatchlistTokens(config: WatchlistConfig): Promise<T
       config.watchlistSource.topTradedCount,
       config.watchlistSource.minLiquidityUsd,
       config.watchlistSource.minTokenAgeHours,
+      config.watchlistSource.excludedSymbols,
     );
     if (topTraded.length === 0) {
       throw new Error("provider returned zero top-traded tokens above the liquidity floor");

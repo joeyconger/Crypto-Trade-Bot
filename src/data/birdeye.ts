@@ -136,10 +136,17 @@ const TOKENLIST_PAGE_SIZE = 50;
  * running on PRICE_PROVIDER=birdeye and need the min-token-age control to
  * actually work, either confirm Birdeye exposes creation time somewhere in
  * this endpoint's real response and wire it in, or switch to
- * PRICE_PROVIDER=geckoterminal where it is enforced.
+ * PRICE_PROVIDER=geckoterminal where it is enforced. excludedSymbols IS
+ * enforced here (this endpoint's items already carry a symbol field).
  */
-export async function getTopTradedTokens(count: number, minLiquidityUsd: number, minTokenAgeHours: number): Promise<TopTradedToken[]> {
+export async function getTopTradedTokens(
+  count: number,
+  minLiquidityUsd: number,
+  minTokenAgeHours: number,
+  excludedSymbols: string[] = [],
+): Promise<TopTradedToken[]> {
   void minTokenAgeHours;
+  const excludedSymbolSet = new Set(excludedSymbols.map((s) => s.toUpperCase()));
   const results: TopTradedToken[] = [];
 
   for (let offset = 0; offset < count; offset += TOKENLIST_PAGE_SIZE) {
@@ -157,6 +164,7 @@ export async function getTopTradedTokens(count: number, minLiquidityUsd: number,
       const liquidityUsd = Number(item?.liquidity ?? 0);
       if (liquidityUsd < minLiquidityUsd) continue;
       if (!item?.address || !item?.symbol) continue;
+      if (excludedSymbolSet.has(String(item.symbol).toUpperCase())) continue;
 
       results.push({
         symbol: item.symbol,

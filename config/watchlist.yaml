@@ -27,6 +27,17 @@ watchlistSource:
   mode: top_traded
   topTradedCount: 100
   refreshIntervalHours: 24
+  # Symbols excluded from dynamic selection (case-insensitive). USD-pegged
+  # stablecoins routinely rank high by volume on Solana DEXs but are
+  # meaningless targets for a fib-retracement/momentum strategy -- a pegged
+  # asset's price barely moves, so the technical conditions have nothing to
+  # fire on. Matched by symbol, not address (a coincidentally-named token
+  # slipping through this list, or a real stablecoin under an unlisted
+  # ticker slipping past it, is low-stakes either way -- unlike guessing an
+  # actual token mint address, which this project avoids everywhere it's
+  # safety-relevant). Add to this list freely.
+  excludedSymbols:
+    [USDT, USDC, DAI, USDE, FDUSD, TUSD, USDD, PYUSD, USDS, USDH, UXD, USDY, BUSD, GUSD, USDP, EURC]
   # Re-checked again at entry time (not just here at selection time) --
   # see engine/loop.ts's considerNewEntry. A pool can thin out well before
   # the watchlist next refreshes.
