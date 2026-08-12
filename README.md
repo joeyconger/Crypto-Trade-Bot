@@ -544,14 +544,20 @@ so they stay correct regardless of slippage or partial-exit drift.
 
 ## Backtesting before live capital
 
-`npm run backtest -- --days 90 [--tokens addr1,addr2] [--fee-bps 30] [--slippage-bps 100]`
+`npm run backtest -- --days 90 [--tokens addr1,addr2] [--top 100] [--fee-bps 30] [--slippage-bps 100]`
 (`src/backtest/run.ts`) walk-forward replays historical OHLCV candles
 through the exact same pure functions the live bot uses --
 `evaluateTechnicalTrigger`, `computeATR`/`computeInitialStop`,
 `computeFibExtensions`, `decideExitAction` -- fee- and slippage-adjusted, and
 reports trade count, win rate, avg win/loss, net return, max drawdown, and a
 buy-and-hold comparison over the same window. Defaults to the pinned tokens
-in `config/watchlist.yaml` if `--tokens` isn't given.
+in `config/watchlist.yaml` if neither `--tokens` nor `--top` is given.
+`--top N` fetches the *current* top-N-by-volume tokens live from
+`PRICE_PROVIDER` and backtests those too -- note this applies today's
+top-N selection uniformly across the whole lookback window rather than
+replaying how the dynamic watchlist's composition actually rotated day by
+day historically, so treat it as "how would the strategy do on today's hot
+tokens, over the recent past" rather than a faithful historical replay.
 
 **Read this before trusting a single number it prints.** The backtest
 simulates **Conditions 1-6 (technical) only.** Condition 7 (on-chain

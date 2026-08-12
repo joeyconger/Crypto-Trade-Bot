@@ -1,6 +1,19 @@
 /**
  * Backtest CLI -- `npm run backtest -- --days 90`
  *
+ * Flags:
+ *   --days <N>          lookback window, default 90
+ *   --tokens <a,b,...>  explicit comma-separated addresses instead of the
+ *                       pinned tokens in watchlist.yaml
+ *   --top <N>           ALSO fetch the current top-N-by-volume tokens (live,
+ *                       from PRICE_PROVIDER) and backtest those alongside
+ *                       whatever --tokens/pinned tokens are already selected.
+ *                       This applies TODAY's top-N selection uniformly across
+ *                       the whole window, not day-by-day historical rotation
+ *                       -- an approximation, not a faithful replay.
+ *   --fee-bps <N>       swap fee assumption, default 30
+ *   --slippage-bps <N>  slippage assumption, default 100
+ *
  * Requires real network access to the configured PRICE_PROVIDER (this
  * sandbox has none -- every run attempted while building this returned a
  * network error, which is expected here and not a bug). Run this from
@@ -39,6 +52,7 @@
  */
 import { loadWatchlistConfig } from "../config/watchlist.js";
 import { env } from "../config/env.js";
+import { getTopTradedTokens } from "../data/priceProvider.js";
 import { fetchHistoricalCandles } from "./fetchHistory.js";
 import { runBacktest, type BacktestResult } from "./engine.js";
 import type { TokenConfig } from "../types/index.js";
@@ -46,16 +60,18 @@ import type { TokenConfig } from "../types/index.js";
 interface CliArgs {
   days: number;
   addresses: string[] | undefined; // undefined = use pinned tokens from config
+  top: number | undefined; // fetch this many CURRENT top-by-volume tokens and test those too
   feeBps: number;
   slippageBps: number;
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { days: 90, addresses: undefined, feeBps: 30, slippageBps: 100 };
+  const args: CliArgs = { days: 90, addresses: undefined, top: undefined, feeBps: 30, slippageBps: 100 };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--days") args.days = Number(argv[++i]);
     else if (arg === "--tokens") args.addresses = argv[++i].split(",").map((s) => s.trim());
+    else if (arg === "--top") args.top = Number(argv[++i]);
     else if (arg === "--fee-bps") args.feeBps = Number(argv[++i]);
     else if (arg === "--slippage-bps") args.slippageBps = Number(argv[++i]);
   }
@@ -94,7 +110,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const config = loadWatchlistConfig();
 
-  const tokensToTest: TokenConfig[] = args.addresses
+  let tokensToTest: TokenConfig[] = args.addresses
     ? args.addresses.map((address) => {
         const pinned = config.tokens.find((t) => t.address === address);
         if (pinned) return pinned;
@@ -105,8 +121,35 @@ async function main() {
       })
     : config.tokens;
 
+  // --top N fetches the CURRENT top-N-by-volume tokens (live, from your
+  // configured PRICE_PROVIDER) and backtests those too, in addition to
+  // whatever's already in tokensToTest. This is necessarily an
+  // approximation: it applies TODAY's top-N selection uniformly across the
+  // whole backtest window, not the top-N as it actually rotated day by day
+  // over that period (which would need reconstructing the watchlist's
+  // historical composition -- out of scope here). Treat it as "how would
+  // the strategy have done on the tokens that are hot right now, over the
+  // recent past" rather than a faithful replay of the dynamic watchlist.
+  if (args.top !== undefined) {
+    if (!config.defaultStrategy) {
+      throw new Error(`--top ${args.top} needs defaultStrategy configured in watchlist.yaml to assign strategy params to the fetched tokens`);
+    }
+    console.log(`Fetching current top ${args.top} tokens by 24h volume from ${env.PRICE_PROVIDER}...`);
+    const topTraded = await getTopTradedTokens(
+      args.top,
+      config.watchlistSource.minLiquidityUsd,
+      config.watchlistSource.minTokenAgeHours,
+      config.watchlistSource.excludedSymbols,
+    );
+    const existingAddresses = new Set(tokensToTest.map((t) => t.address));
+    const dynamicTokens: TokenConfig[] = topTraded
+      .filter((t) => !existingAddresses.has(t.address))
+      .map((t) => ({ ...config.defaultStrategy!, symbol: t.symbol, address: t.address, enabled: true }));
+    tokensToTest = [...tokensToTest, ...dynamicTokens];
+  }
+
   if (tokensToTest.length === 0) {
-    throw new Error("No tokens to backtest -- pass --tokens <address1,address2,...> or configure pinned tokens in watchlist.yaml");
+    throw new Error("No tokens to backtest -- pass --tokens <address1,address2,...>, --top <N>, or configure pinned tokens in watchlist.yaml");
   }
 
   console.log("=".repeat(78));
