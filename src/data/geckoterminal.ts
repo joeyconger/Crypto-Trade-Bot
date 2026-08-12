@@ -187,7 +187,100 @@ export async function getMultiPrice(addresses: string[]): Promise<Map<string, nu
 // scanning meaningfully more than `count` raw pools -- 20 pages is a bounded
 // one-time cost per refresh (every refreshIntervalHours, or every
 // FAILED_REFRESH_RETRY_MINUTES on failure -- not a per-poll-cycle cost).
+//
+// In practice the free-tier /pools (top-by-volume) listing also has a real,
+// permanent ceiling around page 10 -- confirmed live: a 401 "exceeds allowed
+// max number for page" past that point, not a rate limit, so retries don't
+// help. Within that reachable window, volume-sorted pools concentrate
+// heavily on a handful of blue-chip/major tokens traded across many
+// pools/DEXs/quote-pairs at once, so top-by-volume alone tends to top out
+// well short of `count` unique tokens (observed: ~200 pools scanned -> ~12
+// unique tokens). See the new_pools pass below, which exists specifically
+// to make up the difference.
 const MAX_POOL_PAGES = 20;
+
+// /networks/{network}/new_pools is my best-understanding guess at a second
+// GeckoTerminal v2 endpoint (same base path pattern as /pools) listing
+// recently created pools instead of ranking by volume -- UNVERIFIED from
+// this sandbox like every other endpoint shape in this file (no live network
+// access here to confirm against real docs). Newly created pools are each a
+// distinct token by construction, so this should surface a different, more
+// numerous population than the volume-dominated top list -- run only to fill
+// the remainder once the top-by-volume pass is exhausted, never required. If
+// this endpoint doesn't exist or has a different shape than assumed, the
+// first-page error is caught and this pass is skipped with a clear log line;
+// everything found via top-by-volume is still returned.
+const MAX_NEW_POOL_PAGES = 20;
+
+interface PoolScanCounters {
+  poolsScanned: number;
+  excludedForAge: number;
+  excludedForSymbol: number;
+  missingAgeField: number;
+}
+
+// Shared per-page filtering/dedup logic for both the top-by-volume and
+// new_pools passes below -- same acceptance criteria (liquidity floor,
+// minimum age, symbol exclusion) regardless of which listing a pool came
+// from, keeping earlier-found (i.e. higher-volume-ranked) tokens on a dedup
+// collision since this only ever fills in tokens not already `seen`.
+function processPoolsPage(
+  pools: any[],
+  includedTokens: Map<string, any>,
+  seen: Map<string, TopTradedToken>,
+  excludedSymbolSet: Set<string>,
+  minLiquidityUsd: number,
+  minTokenAgeHours: number,
+  counters: PoolScanCounters,
+): void {
+  counters.poolsScanned += pools.length;
+
+  for (const pool of pools) {
+    const liquidityUsd = Number(pool?.attributes?.reserve_in_usd ?? 0);
+    if (liquidityUsd < minLiquidityUsd) continue;
+
+    // pool_created_at is my best understanding of GeckoTerminal's
+    // documented pool attribute for creation time -- unverified from this
+    // sandbox like everything else in this file. Missing/unparseable is
+    // treated as "too young to trust," not "assume it's fine" -- this is
+    // a risk control, so the safe default on uncertain data is exclusion,
+    // not inclusion. missingAgeField in the summary log below makes it
+    // visible if this field turns out not to exist as expected.
+    const createdAtRaw = pool?.attributes?.pool_created_at;
+    const createdAtMs = createdAtRaw ? new Date(createdAtRaw).getTime() : NaN;
+    if (!Number.isFinite(createdAtMs)) {
+      counters.missingAgeField++;
+      continue;
+    }
+    const ageHours = (Date.now() - createdAtMs) / (1000 * 60 * 60);
+    if (ageHours < minTokenAgeHours) {
+      counters.excludedForAge++;
+      continue;
+    }
+
+    const baseTokenId: string | undefined = pool?.relationships?.base_token?.data?.id;
+    if (!baseTokenId) continue;
+    const address = stripNetworkPrefix(baseTokenId);
+    if (seen.has(address)) continue;
+
+    const includedToken = includedTokens.get(baseTokenId);
+    const symbol: string | undefined =
+      includedToken?.attributes?.symbol ?? String(pool?.attributes?.name ?? "").split("/")[0]?.trim();
+    if (!symbol) continue;
+
+    if (excludedSymbolSet.has(symbol.toUpperCase())) {
+      counters.excludedForSymbol++;
+      continue;
+    }
+
+    seen.set(address, {
+      symbol,
+      address,
+      liquidityUsd,
+      volume24hUsd: Number(pool?.attributes?.volume_usd?.h24 ?? 0),
+    });
+  }
+}
 
 /**
  * Top tokens by 24h volume, derived from the top pools listing (GeckoTerminal
@@ -195,6 +288,11 @@ const MAX_POOL_PAGES = 20;
  * keeping each token's single highest-volume pool. Symbol/address are
  * resolved from the JSON:API `included` side-loaded token entities when
  * present, falling back to parsing the pool's "BASE / QUOTE" name field.
+ *
+ * Two passes: top-by-volume first (ranked, so higher-volume tokens win the
+ * dedup), then -- only if still short of `count` -- new_pools to fill the
+ * remainder from a structurally different, less-concentrated population.
+ * See the constant comments above for why each pass is bounded the way it is.
  */
 export async function getTopTradedTokens(
   count: number,
@@ -204,19 +302,17 @@ export async function getTopTradedTokens(
 ): Promise<TopTradedToken[]> {
   const excludedSymbolSet = new Set(excludedSymbols.map((s) => s.toUpperCase()));
   const seen = new Map<string, TopTradedToken>();
-  let poolsScanned = 0;
-  let excludedForAge = 0;
-  let excludedForSymbol = 0;
-  let missingAgeField = 0;
-  let page = 1;
+  const counters: PoolScanCounters = { poolsScanned: 0, excludedForAge: 0, excludedForSymbol: 0, missingAgeField: 0 };
 
-  for (; page <= MAX_POOL_PAGES && seen.size < count; page++) {
+  let volumePages = 0;
+  for (let page = 1; page <= MAX_POOL_PAGES && seen.size < count; page++) {
     // Paced, not hammered -- unlike a single-token OHLCV/price fetch, this
     // loop can issue up to MAX_POOL_PAGES requests back to back with nothing
     // else pacing it. A burst like that can trip rate limiting even under an
     // allowance that would be fine spread out (this was very likely why
     // real runs were failing around page 5-6 consistently).
     if (page > 1) await sleep(1500);
+    volumePages = page;
 
     let body: any;
     try {
@@ -227,70 +323,58 @@ export async function getTopTradedTokens(
       // away every token already found on earlier pages. Only propagate if
       // even the FIRST page failed, since then there's nothing to salvage.
       if (page === 1) throw err;
-      console.error(`getTopTradedTokens: page ${page} failed, stopping with what was already found:`, err instanceof Error ? err.message : err);
+      console.error(`getTopTradedTokens: top-by-volume page ${page} failed, stopping that pass with what was already found:`, err instanceof Error ? err.message : err);
       break;
     }
 
     const pools = (body?.data ?? []) as any[];
     if (pools.length === 0) break; // only stop early on a genuinely empty page, not a "small" one
-    poolsScanned += pools.length;
 
     const includedTokens = new Map<string, any>(
       ((body?.included ?? []) as any[]).filter((i) => i?.type === "token").map((i) => [i.id, i]),
     );
+    processPoolsPage(pools, includedTokens, seen, excludedSymbolSet, minLiquidityUsd, minTokenAgeHours, counters);
+  }
 
-    for (const pool of pools) {
-      const liquidityUsd = Number(pool?.attributes?.reserve_in_usd ?? 0);
-      if (liquidityUsd < minLiquidityUsd) continue;
+  const fromVolume = seen.size;
 
-      // pool_created_at is my best understanding of GeckoTerminal's
-      // documented pool attribute for creation time -- unverified from this
-      // sandbox like everything else in this file. Missing/unparseable is
-      // treated as "too young to trust," not "assume it's fine" -- this is
-      // a risk control, so the safe default on uncertain data is exclusion,
-      // not inclusion. missingAgeField in the summary log below makes it
-      // visible if this field turns out not to exist as expected.
-      const createdAtRaw = pool?.attributes?.pool_created_at;
-      const createdAtMs = createdAtRaw ? new Date(createdAtRaw).getTime() : NaN;
-      if (!Number.isFinite(createdAtMs)) {
-        missingAgeField++;
-        continue;
-      }
-      const ageHours = (Date.now() - createdAtMs) / (1000 * 60 * 60);
-      if (ageHours < minTokenAgeHours) {
-        excludedForAge++;
-        continue;
-      }
+  let newPoolPages = 0;
+  if (seen.size < count) {
+    for (let page = 1; page <= MAX_NEW_POOL_PAGES && seen.size < count; page++) {
+      await sleep(1500); // this pass always follows at least one prior request, so always pace it
+      newPoolPages = page;
 
-      const baseTokenId: string | undefined = pool?.relationships?.base_token?.data?.id;
-      if (!baseTokenId) continue;
-      const address = stripNetworkPrefix(baseTokenId);
-      if (seen.has(address)) continue;
-
-      const includedToken = includedTokens.get(baseTokenId);
-      const symbol: string | undefined =
-        includedToken?.attributes?.symbol ?? String(pool?.attributes?.name ?? "").split("/")[0]?.trim();
-      if (!symbol) continue;
-
-      if (excludedSymbolSet.has(symbol.toUpperCase())) {
-        excludedForSymbol++;
-        continue;
+      let body: any;
+      try {
+        body = await gtGet(`/networks/${NETWORK}/new_pools`, { page: String(page) });
+      } catch (err) {
+        if (page === 1) {
+          console.error(
+            "getTopTradedTokens: new_pools pass unavailable (endpoint may not exist, or have a different shape than assumed) -- skipping, keeping top-by-volume results only:",
+            err instanceof Error ? err.message : err,
+          );
+        } else {
+          console.error(`getTopTradedTokens: new_pools page ${page} failed, stopping that pass with what was already found:`, err instanceof Error ? err.message : err);
+        }
+        break;
       }
 
-      seen.set(address, {
-        symbol,
-        address,
-        liquidityUsd,
-        volume24hUsd: Number(pool?.attributes?.volume_usd?.h24 ?? 0),
-      });
+      const pools = (body?.data ?? []) as any[];
+      if (pools.length === 0) break;
+
+      const includedTokens = new Map<string, any>(
+        ((body?.included ?? []) as any[]).filter((i) => i?.type === "token").map((i) => [i.id, i]),
+      );
+      processPoolsPage(pools, includedTokens, seen, excludedSymbolSet, minLiquidityUsd, minTokenAgeHours, counters);
     }
   }
 
   console.log(
-    `getTopTradedTokens: found ${seen.size}/${count} unique tokens from ${poolsScanned} pools across ${page - 1} page(s)` +
-      ` (excluded ${excludedForAge} under ${minTokenAgeHours}h old, ${excludedForSymbol} stablecoins/excluded symbols, ${missingAgeField} with no parseable pool_created_at)` +
+    `getTopTradedTokens: found ${seen.size}/${count} unique tokens (${fromVolume} top-by-volume + ${seen.size - fromVolume} new-pools)` +
+      ` from ${counters.poolsScanned} pools across ${volumePages} volume page(s) + ${newPoolPages} new-pool page(s)` +
+      ` (excluded ${counters.excludedForAge} under ${minTokenAgeHours}h old, ${counters.excludedForSymbol} stablecoins/excluded symbols, ${counters.missingAgeField} with no parseable pool_created_at)` +
       (seen.size < count ? " -- ran out of pages or pools before reaching the target count" : "") +
-      (missingAgeField > poolsScanned / 2 ? " -- WARNING: pool_created_at may not be the right field name, check a raw response" : ""),
+      (counters.missingAgeField > counters.poolsScanned / 2 ? " -- WARNING: pool_created_at may not be the right field name, check a raw response" : ""),
   );
 
   return [...seen.values()].slice(0, count);
