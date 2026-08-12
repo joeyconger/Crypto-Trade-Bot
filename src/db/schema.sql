@@ -162,9 +162,18 @@ CREATE INDEX IF NOT EXISTS idx_signal_log_evaluated_at ON signal_log (evaluated_
 CREATE TABLE IF NOT EXISTS bot_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   paused INTEGER NOT NULL DEFAULT 0,
-  -- Last time the dynamic (top_traded) watchlist was re-selected from
-  -- Birdeye. NULL means never -- the first poll cycle always refreshes.
+  -- Last time the dynamic (top_traded) watchlist was successfully
+  -- re-selected. NULL means never -- the first poll cycle always refreshes.
   watchlist_last_refreshed_at TEXT,
+  -- Last time a refresh was ATTEMPTED, success or failure -- distinct from
+  -- the above so a persistently-failing provider endpoint backs off between
+  -- retries (engine/watchlistSource.ts) instead of re-attempting the full
+  -- API call burst every single poll cycle forever.
+  watchlist_last_attempted_at TEXT,
+  -- Error message from the most recent failed attempt, cleared on success --
+  -- surfaced on the dashboard so "why is it still only trading the pinned
+  -- tokens" has a visible answer instead of only living in server logs.
+  watchlist_last_error TEXT,
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

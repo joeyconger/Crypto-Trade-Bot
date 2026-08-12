@@ -16,6 +16,7 @@ import {
   getCircuitBreakerState,
   getWatchlistTokensFromDb,
   getWatchlistLastRefreshedAt,
+  getWatchlistRefreshError,
 } from "../db/index.js";
 import { checkCircuitBreakers, resumeWeeklyHalt, resumeConsecutiveLossHalt } from "../execution/circuitBreakers.js";
 import { getTokenOverview } from "../data/priceProvider.js";
@@ -77,7 +78,15 @@ export function createDashboardServer() {
       config.watchlistSource.mode === "top_traded"
         ? (() => {
             const count = getWatchlistTokensFromDb().length;
-            return { enabled: count, total: count, lastRefreshedAt: getWatchlistLastRefreshedAt() ?? null };
+            return {
+              enabled: count,
+              total: count,
+              lastRefreshedAt: getWatchlistLastRefreshedAt() ?? null,
+              // Set only when the most recent refresh attempt failed --
+              // still-populated + non-null here means the dynamic list is
+              // stuck on its last-known-good state (or pins-only) and why.
+              lastRefreshError: getWatchlistRefreshError() ?? null,
+            };
           })()
         : { enabled: config.tokens.filter((t) => t.enabled).length, total: config.tokens.length };
 

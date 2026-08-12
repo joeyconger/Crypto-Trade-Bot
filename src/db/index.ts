@@ -84,6 +84,27 @@ export function setWatchlistLastRefreshedAt(iso: string): void {
     .run(iso);
 }
 
+export function getWatchlistLastAttemptedAt(): string | undefined {
+  const row = getDb().prepare(`SELECT watchlist_last_attempted_at FROM bot_state WHERE id = 1`).get() as
+    | { watchlist_last_attempted_at: string | null }
+    | undefined;
+  return row?.watchlist_last_attempted_at ?? undefined;
+}
+
+/** Stamps a refresh attempt and records its outcome -- pass null to clear the error on success. */
+export function setWatchlistAttempt(iso: string, error: string | null): void {
+  getDb()
+    .prepare(`UPDATE bot_state SET watchlist_last_attempted_at = ?, watchlist_last_error = ? WHERE id = 1`)
+    .run(iso, error);
+}
+
+export function getWatchlistRefreshError(): string | undefined {
+  const row = getDb().prepare(`SELECT watchlist_last_error FROM bot_state WHERE id = 1`).get() as
+    | { watchlist_last_error: string | null }
+    | undefined;
+  return row?.watchlist_last_error ?? undefined;
+}
+
 /** All tokens' last technical-eval timestamps in one query, for the poll loop's per-cycle due-check across the whole watchlist. */
 export function getLastTechnicalEvalAtMap(): Map<string, string> {
   const rows = getDb()

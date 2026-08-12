@@ -177,7 +177,17 @@ export async function getMultiPrice(addresses: string[]): Promise<Map<string, nu
   return prices;
 }
 
-const POOLS_PAGE_SIZE = 20; // GeckoTerminal's /pools listing page size
+// Bounded page count, not derived from an assumed page size -- GeckoTerminal's
+// actual /pools page size is itself an unverified guess, and the previous
+// version broke out of the loop as soon as one page returned fewer results
+// than that guess, which could stop discovery after a single page. Multiple
+// distinct pools also frequently share the same base token (a blue-chip like
+// SOL/USDC paired against several quote tokens across several DEXs all rank
+// near the top by volume), so reaching `count` UNIQUE tokens can require
+// scanning meaningfully more than `count` raw pools -- 20 pages is a bounded
+// one-time cost per refresh (every refreshIntervalHours, or every
+// FAILED_REFRESH_RETRY_MINUTES on failure -- not a per-poll-cycle cost).
+const MAX_POOL_PAGES = 20;
 
 /**
  * Top tokens by 24h volume, derived from the top pools listing (GeckoTerminal
@@ -188,16 +198,26 @@ const POOLS_PAGE_SIZE = 20; // GeckoTerminal's /pools listing page size
  */
 export async function getTopTradedTokens(count: number, minLiquidityUsd: number): Promise<TopTradedToken[]> {
   const seen = new Map<string, TopTradedToken>();
-  const maxPages = Math.ceil(count / POOLS_PAGE_SIZE) + 2; // a little slack for dedup/liquidity filtering
+  let poolsScanned = 0;
+  let page = 1;
 
-  for (let page = 1; page <= maxPages && seen.size < count; page++) {
-    const body = await gtGet(`/networks/${NETWORK}/pools`, {
-      sort: "h24_volume_usd_desc",
-      page: String(page),
-    });
+  for (; page <= MAX_POOL_PAGES && seen.size < count; page++) {
+    let body: any;
+    try {
+      body = await gtGet(`/networks/${NETWORK}/pools`, { sort: "h24_volume_usd_desc", page: String(page) });
+    } catch (err) {
+      // Free-tier pool listings are commonly capped around page 10 -- if a
+      // later page 400s/404s for that reason (or any other), don't throw
+      // away every token already found on earlier pages. Only propagate if
+      // even the FIRST page failed, since then there's nothing to salvage.
+      if (page === 1) throw err;
+      console.error(`getTopTradedTokens: page ${page} failed, stopping with what was already found:`, err instanceof Error ? err.message : err);
+      break;
+    }
 
     const pools = (body?.data ?? []) as any[];
-    if (pools.length === 0) break;
+    if (pools.length === 0) break; // only stop early on a genuinely empty page, not a "small" one
+    poolsScanned += pools.length;
 
     const includedTokens = new Map<string, any>(
       ((body?.included ?? []) as any[]).filter((i) => i?.type === "token").map((i) => [i.id, i]),
@@ -224,9 +244,12 @@ export async function getTopTradedTokens(count: number, minLiquidityUsd: number)
         volume24hUsd: Number(pool?.attributes?.volume_usd?.h24 ?? 0),
       });
     }
-
-    if (pools.length < POOLS_PAGE_SIZE) break;
   }
+
+  console.log(
+    `getTopTradedTokens: found ${seen.size}/${count} unique tokens from ${poolsScanned} pools across ${page - 1} page(s)` +
+      (seen.size < count ? " -- ran out of pages or pools before reaching the target count" : ""),
+  );
 
   return [...seen.values()].slice(0, count);
 }
