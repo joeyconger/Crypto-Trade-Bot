@@ -3,6 +3,10 @@ import type { OhlcvCandle } from "../data/types.js";
 
 const MAX_PAGES = 50; // bounded to avoid a runaway loop against a misbehaving provider
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Pages backward through history to assemble a candle series spanning
  * [fromUnix, toUnix] at the granularity the live bot would use for a token
@@ -23,6 +27,12 @@ export async function fetchHistoricalCandles(
   let cursor = toUnix;
 
   for (let page = 0; page < MAX_PAGES; page++) {
+    // Paced, not hammered -- same reasoning as getTopTradedTokens's pool
+    // pagination: a backtest over a long window can issue dozens of these
+    // calls back to back for a single token, which is enough to trip rate
+    // limiting even under an allowance that's fine spread out.
+    if (page > 0) await sleep(1500);
+
     const batch = await getOhlcv(address, swingLookbackHours, fromUnix, cursor);
     if (batch.length === 0) break;
 

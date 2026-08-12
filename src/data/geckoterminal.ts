@@ -211,6 +211,13 @@ export async function getTopTradedTokens(
   let page = 1;
 
   for (; page <= MAX_POOL_PAGES && seen.size < count; page++) {
+    // Paced, not hammered -- unlike a single-token OHLCV/price fetch, this
+    // loop can issue up to MAX_POOL_PAGES requests back to back with nothing
+    // else pacing it. A burst like that can trip rate limiting even under an
+    // allowance that would be fine spread out (this was very likely why
+    // real runs were failing around page 5-6 consistently).
+    if (page > 1) await sleep(1500);
+
     let body: any;
     try {
       body = await gtGet(`/networks/${NETWORK}/pools`, { sort: "h24_volume_usd_desc", page: String(page) });
