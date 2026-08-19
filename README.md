@@ -613,7 +613,83 @@ npm run backtest          # walk-forward technical-only backtest -- see
                            # "Backtesting before live capital" above for what
                            # it does and doesn't validate
 npm run generate-keypair  # creates the bot's own Solana keypair (run yourself, see above)
+npm run tail-summary      # prints the wallet-tail module's summary stats --
+                           # optionally `-- --days 7` to scope the window;
+                           # see "Wallet tail" below
 ```
+
+## Wallet tail (research module)
+
+`src/tail/` is a fully separate paper-trading experiment: it mirrors a
+specific wallet's on-chain swaps to test whether copy-tailing a public
+trader is viable, before deciding whether that's worth pursuing as its own
+strategy. It does not touch, gate, or share state with the strategy
+described above in any way:
+
+- Own paper balance (`TAIL_STARTING_BALANCE_USD`), own fixed-% sizing
+  (`TAIL_POSITION_SIZE_PCT`) -- unrelated to `risk.riskPctPerTrade`/tiers.
+- Own DB tables (`tail_trades`, `tail_wallets`, `tail_webhook_log`,
+  `tail_coverage_gaps`), namespaced `tail_*`, no foreign keys into `trades`/
+  `positions`/`circuit_breaker_state`, never read by `engine/loop.ts` or
+  anything under `onchain/`.
+- Own dashboard section, clearly labeled "research · paper only," never
+  blended into the main equity/P&L KPIs at the top of the page.
+- **Paper trading only.** There is no live execution path for this module,
+  not even behind a flag -- going live with a copy-tail strategy would be a
+  separate, explicit decision made after reviewing real data from this.
+
+### What it's measuring
+
+The question isn't "would mirroring this wallet have made money" alone --
+it's **how much of that result is real edge vs. how much is lost to lag**.
+Every mirrored trade fetches its fill price only after waiting
+`TAIL_SIMULATED_DELAY_SECONDS` (default 5s, representing route-building + tx
+submission + confirmation) past detection, then prices at THAT later moment
+-- not the wallet's price, not the price at the instant of detection. The
+dashboard and `npm run tail-summary` show that realistic (lagged) P&L
+side-by-side with what the same trades would have made filled instantly at
+the wallet's exact price/time. The gap between them is the lag cost, and
+it's the actual answer to whether this is worth pursuing further -- not the
+raw P&L number alone.
+
+If no reliable price exists at fill time (token too new, no pool data), the
+trade is logged `unfillable_entry`/`unfillable_exit` rather than a fabricated
+price -- these are counted and shown separately, never silently dropped or
+guessed.
+
+### Setup
+
+1. Set `TAIL_ENABLED=true`, `TAIL_WALLET_ADDRESSES` (comma-separated,
+   defaults to the wallet this module was built around), and optionally
+   `TAIL_WEBHOOK_SECRET` (strongly recommended) in `.env`.
+2. In your Helius dashboard, create an **Enhanced webhook** (transaction
+   type `SWAP`), watching the same address(es) as `TAIL_WALLET_ADDRESSES`,
+   pointed at `https://<your-deploy>/api/tail/webhook`. If you set
+   `TAIL_WEBHOOK_SECRET`, put the exact same value in Helius's
+   "Authorization Header" field -- every incoming POST is checked against it.
+3. This is push-based, not polling -- Helius calls your endpoint the moment
+   it sees a matching transaction, which is the whole point (polling would
+   add latency on top of everything the delay is already measuring).
+
+The webhook payload shape (Helius's "enhanced transaction" format) is this
+project's best understanding, unverified from this sandbox (no live network
+access here) -- same caveat as every Birdeye/GeckoTerminal integration
+elsewhere in this repo. If real deliveries don't parse, they're logged to
+`tail_webhook_log` as `parse_error` with the reason rather than silently
+dropped or crashing the endpoint; check that table (or the dashboard's
+webhook-log view) against a raw payload before assuming the strategy logic
+is at fault.
+
+### Coverage gaps
+
+The webhook handler logs every delivery it receives -- successful,
+ignored, or failed to parse -- specifically so "the wallet was quiet" can be
+told apart from "something broke and we stopped seeing events." It also logs
+a `startup_gap` note if the server comes up after a suspiciously long
+silence. This can only see gaps on **this server's** side (crashes, restarts,
+handler errors); it has no way to know whether Helius attempted delivery
+during a gap and failed, since a delivery that never reached this server
+leaves no record here at all.
 
 ## Deployment (Railway)
 

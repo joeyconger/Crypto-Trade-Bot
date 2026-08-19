@@ -411,6 +411,39 @@
     color: var(--text-muted);
     font-size: 11.5px;
   }
+
+  .research-panel {
+    margin-top: 40px;
+    padding-top: 22px;
+    border-top: 2px dashed var(--border-strong);
+  }
+
+  .research-panel h2 { color: var(--violet); }
+
+  .badge.research {
+    color: var(--violet);
+    background: rgba(144, 133, 233, 0.14);
+  }
+
+  .research-note {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin: -4px 0 16px;
+    max-width: 680px;
+    line-height: 1.5;
+  }
+
+  .research-kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+
+  @media (max-width: 1100px) { .research-kpi-grid { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 620px) { .research-kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+
+  .research-kpi-grid .card { border-color: rgba(144, 133, 233, 0.22); }
 </style>
 </head>
 <body>
@@ -508,6 +541,62 @@
         <tbody id="signalsBody"></tbody>
       </table>
       <div class="empty" id="signalsEmpty" style="display:none">No signal evaluations logged yet</div>
+    </div>
+  </section>
+
+  <section class="panel research-panel" id="tailSection" style="display:none">
+    <h2><span class="badge research"><span class="dot"></span>research &middot; paper only</span>&nbsp; Wallet tail</h2>
+    <p class="research-note">
+      Mirrors a specific wallet's on-chain swaps into simulated paper trades to test whether copy-tailing is
+      viable. Fully separate from the strategy above &mdash; its own paper balance, its own tables, not part of
+      the KPIs or P&amp;L at the top of this page. "Realistic" fills wait a simulated pipeline delay before
+      pricing, the same way real execution would lag the wallet; "if filled at wallet's price" shows what the
+      same trade would have made with zero lag, isolating how much of the result is pure latency cost.
+    </p>
+    <div class="research-kpi-grid">
+      <div class="card kpi">
+        <div class="label">Simulated P&amp;L</div>
+        <div class="value" id="tailKpiSimPnl">&mdash;</div>
+        <div class="sub">realistic (lagged) fills</div>
+      </div>
+      <div class="card kpi">
+        <div class="label">If filled at wallet's price</div>
+        <div class="value" id="tailKpiExactPnl">&mdash;</div>
+        <div class="sub">zero-lag comparison</div>
+      </div>
+      <div class="card kpi">
+        <div class="label">Lag cost</div>
+        <div class="value" id="tailKpiLagCost">&mdash;</div>
+        <div class="sub">exact-fill P&amp;L minus realistic</div>
+      </div>
+      <div class="card kpi">
+        <div class="label">Win rate</div>
+        <div class="value" id="tailKpiWinRate">&mdash;</div>
+        <div class="sub" id="tailKpiTradeCount">&nbsp;</div>
+      </div>
+      <div class="card kpi">
+        <div class="label">Avg detection latency</div>
+        <div class="value" id="tailKpiLatency">&mdash;</div>
+        <div class="sub">webhook receipt vs. on-chain tx</div>
+      </div>
+      <div class="card kpi">
+        <div class="label">Avg slippage vs. wallet</div>
+        <div class="value" id="tailKpiSlippage">&mdash;</div>
+        <div class="sub">entry fill, simulated vs. actual</div>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Token</th><th>Status</th><th>Wallet entry</th><th>Sim entry</th><th>Entry slip</th>
+            <th>Wallet exit</th><th>Sim exit</th><th>Exit slip</th><th>Detect latency</th>
+            <th>Sim P&amp;L</th><th>Exact P&amp;L</th><th>Opened</th>
+          </tr>
+        </thead>
+        <tbody id="tailTradesBody"></tbody>
+      </table>
+      <div class="empty" id="tailTradesEmpty" style="display:none">No mirrored trades yet</div>
     </div>
   </section>
 
@@ -741,9 +830,73 @@
     }).join("");
   }
 
+  function fmtMs(n) {
+    if (n == null) return "&mdash;";
+    return n < 1000 ? Math.round(n) + "ms" : (n / 1000).toFixed(1) + "s";
+  }
+
+  let tailModuleAvailable = null; // null = unknown yet, true/false once checked
+
+  async function refreshTail() {
+    const section = document.getElementById("tailSection");
+    if (tailModuleAvailable === false) return; // checked once already and it's off -- stop polling this endpoint
+
+    try {
+      const status = await fetchJson("/api/tail/status");
+      tailModuleAvailable = !!status.enabled;
+      if (!tailModuleAvailable) {
+        section.style.display = "none";
+        return;
+      }
+      section.style.display = "block";
+
+      const [summary, trades] = await Promise.all([
+        fetchJson("/api/tail/summary"),
+        fetchJson("/api/tail/trades?limit=100"),
+      ]);
+
+      document.getElementById("tailKpiSimPnl").innerHTML = pnlSpan(summary.totalSimulatedPnlUsd, null).replace('<span class="', '<span class="value ');
+      document.getElementById("tailKpiExactPnl").innerHTML = pnlSpan(summary.totalWalletExactPnlUsd, null).replace('<span class="', '<span class="value ');
+      const lagCostEl = document.getElementById("tailKpiLagCost");
+      lagCostEl.innerHTML = fmtUsd(summary.lagCostUsd);
+      lagCostEl.className = "value " + (summary.lagCostUsd > 0 ? "down" : "up"); // positive lag cost = money given up to being slow -- shown as a negative (bad) in red
+
+      document.getElementById("tailKpiWinRate").textContent = summary.winRate == null ? "—" : summary.winRate.toFixed(1) + "%";
+      document.getElementById("tailKpiTradeCount").textContent =
+        `${summary.tradeCount} closed · ${summary.openCount} open · ${summary.unfillableEntryCount + summary.unfillableExitCount} unfillable`;
+
+      document.getElementById("tailKpiLatency").innerHTML = fmtMs(summary.avgEntryDetectionLatencyMs);
+      document.getElementById("tailKpiSlippage").innerHTML = summary.avgEntrySlippageVsWalletPct == null ? "&mdash;" : fmtPct(summary.avgEntrySlippageVsWalletPct);
+
+      document.getElementById("tailTradesEmpty").style.display = trades.length ? "none" : "block";
+      document.getElementById("tailTradesBody").innerHTML = trades.map((t) => `
+        <tr>
+          <td class="sym">${esc(t.token_symbol)}</td>
+          <td><span class="pill ${t.status === 'closed' ? 'yes' : t.status.startsWith('unfillable') ? 'no' : 'none'}">${t.status.replace('_', ' ')}</span></td>
+          <td>${fmtPrice(t.wallet_entry_price_usd)}</td>
+          <td>${fmtPrice(t.sim_entry_fill_price_usd)}</td>
+          <td>${t.entry_slippage_vs_wallet_pct == null ? "&mdash;" : fmtPct(t.entry_slippage_vs_wallet_pct)}</td>
+          <td>${fmtPrice(t.wallet_exit_price_usd)}</td>
+          <td>${fmtPrice(t.sim_exit_fill_price_usd)}</td>
+          <td>${t.exit_slippage_vs_wallet_pct == null ? "&mdash;" : fmtPct(t.exit_slippage_vs_wallet_pct)}</td>
+          <td>${fmtMs(t.entry_detection_latency_ms)}</td>
+          <td>${pnlSpan(t.pnl_usd, t.pnl_pct)}</td>
+          <td>${pnlSpan(t.wallet_exact_pnl_usd, t.wallet_exact_pnl_pct)}</td>
+          <td>${fmtTime(t.created_at)}</td>
+        </tr>
+      `).join("");
+    } catch (err) {
+      // A 404 (route not mounted -- TAIL_ENABLED=false) is expected and not
+      // an error worth logging; anything else is a real fetch failure.
+      if (tailModuleAvailable !== false) console.error("tail refresh failed", err);
+      tailModuleAvailable = false;
+      section.style.display = "none";
+    }
+  }
+
   async function refreshAll() {
     try {
-      await Promise.all([refreshStatus(), refreshPositions(), refreshTrades(), refreshSignals()]);
+      await Promise.all([refreshStatus(), refreshPositions(), refreshTrades(), refreshSignals(), refreshTail()]);
     } catch (err) {
       console.error("dashboard refresh failed", err);
     }

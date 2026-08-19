@@ -45,6 +45,30 @@ const envSchema = z.object({
   // handful of large bursts. Ticks are cheap when nothing's due -- this
   // doesn't cost extra API calls on its own.
   POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
+
+  // ---- Wallet-tail research module (src/tail/) -- fully separate from the
+  // main strategy above: own paper balance, own DB tables, paper-only, no
+  // live path. See src/tail/README.md.
+  TAIL_ENABLED: boolFromString,
+  // Comma-separated wallet addresses to mirror. Configurable, not hardcoded
+  // -- defaults to the wallet this module was built to evaluate (omo /
+  // omotrades.com) but any address(es) can be swapped in.
+  TAIL_WALLET_ADDRESSES: z.string().default("HxwmEH84o3EuezCUZuBEEeKT6uMDv8R4VRi76ExB87St"),
+  // % of TAIL_STARTING_BALANCE_USD sized into each mirrored position -- this
+  // module's own fixed-fraction sizing, unrelated to the main strategy's
+  // riskPctPerTrade/riskPctPerTradeTierB.
+  TAIL_POSITION_SIZE_PCT: z.coerce.number().positive().default(2),
+  // Simulated route-building + tx submission + confirmation delay, in
+  // seconds, applied between webhook detection and the paper fill lookup --
+  // this is the core of what the module is testing (edge lost to lag), not
+  // a knob to tune for better-looking results.
+  TAIL_SIMULATED_DELAY_SECONDS: z.coerce.number().nonnegative().default(5),
+  TAIL_STARTING_BALANCE_USD: z.coerce.number().positive().default(1000),
+  // Shared secret expected on incoming webhook calls (the exact value you
+  // configure as the "Authorization Header" when creating the Helius
+  // webhook). Optional but strongly recommended -- unset means the webhook
+  // endpoint accepts unauthenticated POSTs from anyone who finds the URL.
+  TAIL_WEBHOOK_SECRET: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema> & {

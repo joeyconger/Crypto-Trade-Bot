@@ -22,6 +22,9 @@ import { checkCircuitBreakers, resumeWeeklyHalt, resumeConsecutiveLossHalt } fro
 import { getTokenOverview } from "../data/priceProvider.js";
 import { getBotWalletBalanceUsd } from "../execution/liveTrading.js";
 import type { RiskConfig } from "../types/index.js";
+import { loadTailConfig } from "../tail/config.js";
+import { createTailWebhookRouter } from "../tail/webhook.js";
+import { createTailDashboardRouter } from "../tail/dashboardRoutes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -66,6 +69,18 @@ export function createDashboardServer() {
   const app = express();
   app.use(express.json());
   app.use(express.static(path.join(__dirname, "public")));
+
+  // Wallet-tail research module -- fully separate paper-trading experiment
+  // (own DB tables, own paper balance, no live path). Mounted here only
+  // because it's the same Express process/port; it never reads the main
+  // strategy's trades/positions/circuit-breaker state above, and its routes
+  // are namespaced under /api/tail so the dashboard can render it as a
+  // clearly separate section. See src/tail/.
+  const tailConfig = loadTailConfig();
+  if (tailConfig.enabled) {
+    app.use("/api/tail", createTailWebhookRouter(tailConfig));
+    app.use("/api/tail", createTailDashboardRouter(tailConfig));
+  }
 
   app.get("/api/status", async (_req, res) => {
     const config = loadWatchlistConfig();

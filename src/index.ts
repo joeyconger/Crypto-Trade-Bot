@@ -6,6 +6,9 @@ import { startPollLoop } from "./engine/loop.js";
 import { startDashboardServer } from "./dashboard/server.js";
 import { getBotKeypair } from "./solana/keypair.js";
 import { getConnection } from "./solana/connection.js";
+import { loadTailConfig } from "./tail/config.js";
+import { initTailSchema, upsertTailWallet } from "./tail/db.js";
+import { logStartupCoverageGapIfAny } from "./tail/webhook.js";
 
 // Per technical-trigger scan (OHLCV fetch + fib/RSI/volume/close checks) for
 // a token with no open position: one price-provider OHLCV call, one Helius
@@ -110,6 +113,18 @@ async function main() {
     }
   } else {
     console.log(`  paper starting balance: $${env.PAPER_STARTING_BALANCE_USD}`);
+  }
+
+  const tailConfig = loadTailConfig();
+  if (tailConfig.enabled) {
+    initTailSchema();
+    for (const address of tailConfig.walletAddresses) upsertTailWallet(address, null);
+    logStartupCoverageGapIfAny(tailConfig.walletAddresses);
+    console.log(
+      `  wallet-tail (research, paper-only): watching ${tailConfig.walletAddresses.length} wallet(s), ` +
+        `${tailConfig.positionSizePct}% sizing, ${tailConfig.simulatedDelaySeconds}s simulated delay, ` +
+        `$${tailConfig.startingBalanceUsd} own paper balance -- register the Helius webhook at POST /api/tail/webhook (see README)`,
+    );
   }
   console.log("");
 
