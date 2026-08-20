@@ -73,69 +73,68 @@ function netLegsForWallet(tx: HeliusTransaction, walletAddress: string): ParsedS
     .map(([mint, netAmount]) => ({ mint, netAmount }));
 }
 
+function isQuoteMint(mint: string): boolean {
+  return mint === WSOL_MINT || STABLECOIN_MINTS.has(mint);
+}
+
 export function parseSwapForWallet(tx: HeliusTransaction, walletAddress: string): ParseResult {
   if (tx.type !== "SWAP") {
     return { ok: false, reason: `not a SWAP event (type=${tx.type})` };
   }
 
   const legs = netLegsForWallet(tx, walletAddress);
-  if (legs.length !== 2) {
+  const tokenLegs = legs.filter((l) => !isQuoteMint(l.mint));
+  const quoteLegs = legs.filter((l) => isQuoteMint(l.mint));
+
+  // Exactly one non-quote leg is required to know unambiguously which asset
+  // is "the one being tailed" -- zero means nothing recognizable was traded
+  // (or it's a pure SOL<->stablecoin swap, not a token trade), more than one
+  // means a genuine multi-token swap with no single answer to mirror.
+  if (tokenLegs.length !== 1) {
     return {
       ok: false,
-      reason: `expected exactly 2 net-nonzero legs for this wallet, found ${legs.length} -- ${JSON.stringify(legs)}`,
+      reason: `expected exactly 1 non-quote (traded-token) leg, found ${tokenLegs.length} -- ${JSON.stringify(legs)}`,
     };
   }
-
-  const [a, b] = legs;
-  const received = a.netAmount > 0 ? a : b;
-  const sent = a.netAmount > 0 ? b : a;
-  if (received.netAmount <= 0 || sent.netAmount >= 0) {
-    return { ok: false, reason: `couldn't identify a clean received/sent pair -- ${JSON.stringify(legs)}` };
+  if (quoteLegs.length === 0) {
+    return { ok: false, reason: `no SOL/stablecoin leg found to price the trade against -- ${JSON.stringify(legs)}` };
   }
 
-  const receivedIsQuote = received.mint === WSOL_MINT || STABLECOIN_MINTS.has(received.mint);
-  const sentIsQuote = sent.mint === WSOL_MINT || STABLECOIN_MINTS.has(sent.mint);
-
-  // The traded token is whichever leg ISN'T SOL/a stablecoin -- if both legs
-  // are quote-like (e.g. swapping USDC for SOL) or neither is (an exotic
-  // token-for-token swap), there's no unambiguous "asset being tailed" to
-  // mirror, so this is reported unparseable rather than guessed.
-  let tokenAddress: string;
-  let tokenAmount: number;
-  let side: "buy" | "sell";
-  let quoteMint: string;
-  let quoteAmount: number;
-
-  if (receivedIsQuote === sentIsQuote) {
-    return {
-      ok: false,
-      reason: `ambiguous which leg is the traded token vs. the quote asset -- received ${received.mint}, sent ${Math.abs(sent.netAmount)} ${sent.mint}`,
-    };
-  } else if (sentIsQuote) {
-    // paid with SOL/a stable, received the token -> buy
-    side = "buy";
-    tokenAddress = received.mint;
-    tokenAmount = received.netAmount;
-    quoteMint = sent.mint;
-    quoteAmount = Math.abs(sent.netAmount);
-  } else {
-    // sent the token, received SOL/a stable -> sell
-    side = "sell";
-    tokenAddress = sent.mint;
-    tokenAmount = Math.abs(sent.netAmount);
-    quoteMint = received.mint;
-    quoteAmount = received.netAmount;
+  const token = tokenLegs[0];
+  if (token.netAmount === 0) {
+    return { ok: false, reason: `traded-token leg netted to zero -- ${JSON.stringify(legs)}` };
   }
+
+  // In practice a real swap's quote side is one asset, but the tailed
+  // wallet's transaction can carry a SECOND, much smaller SOL movement
+  // alongside it -- observed live: e.g. -5000 USDC / +318,533 TOKEN /
+  // +0.027 SOL in the same tx. That extra SOL is almost certainly gas,
+  // an ATA-rent refund from closing a temporary wrapped-SOL account, or a
+  // routing/referral rebate -- not the trade itself -- so when a stablecoin
+  // leg is present alongside a SOL leg, the stablecoin is treated as the
+  // real quote and the SOL leg is dropped as noise. This is a live-data
+  // fix, not a guess: every quote leg it was built to catch as ambiguous
+  // before this turned out to be exactly this shape. If quote legs are
+  // ever ambiguous in some other way (e.g. two distinct stablecoins, which
+  // hasn't been observed), the larger-magnitude one wins as a fallback --
+  // still a best-effort choice, not a verified rule.
+  const quote =
+    quoteLegs.length === 1
+      ? quoteLegs[0]
+      : quoteLegs.find((l) => STABLECOIN_MINTS.has(l.mint)) ??
+        quoteLegs.reduce((biggest, l) => (Math.abs(l.netAmount) > Math.abs(biggest.netAmount) ? l : biggest));
+
+  const side: "buy" | "sell" = token.netAmount > 0 ? "buy" : "sell";
 
   return {
     ok: true,
     swap: {
       side,
-      tokenAddress,
-      tokenAmount,
-      quoteMint,
-      quoteAmount,
-      quoteIsStable: STABLECOIN_MINTS.has(quoteMint),
+      tokenAddress: token.mint,
+      tokenAmount: Math.abs(token.netAmount),
+      quoteMint: quote.mint,
+      quoteAmount: Math.abs(quote.netAmount),
+      quoteIsStable: STABLECOIN_MINTS.has(quote.mint),
       txSignature: tx.signature,
       onchainAt: new Date(tx.timestamp * 1000).toISOString(),
     },

@@ -101,7 +101,7 @@ test("parseSwapForWallet: ambiguous when both legs are quote-like", () => {
   assert.equal(result.ok, false);
 });
 
-test("parseSwapForWallet: more than two net legs is unparseable", () => {
+test("parseSwapForWallet: more than one traded-token leg is unparseable", () => {
   const tx = baseTx({
     tokenTransfers: [
       { mint: TOKEN_MINT, tokenAmount: 100, fromUserAccount: "poolX", toUserAccount: WALLET },
@@ -112,4 +112,27 @@ test("parseSwapForWallet: more than two net legs is unparseable", () => {
 
   const result = parseSwapForWallet(tx, WALLET);
   assert.equal(result.ok, false);
+});
+
+test("parseSwapForWallet: a small residual SOL leg alongside a USDC-denominated buy is ignored, not fatal (real observed shape)", () => {
+  // Live example: omo paid 5000 USDC, received 318,533 TOKEN, and also
+  // received a small unrelated 0.027 SOL in the same tx (gas/rebate/rent
+  // refund, not the trade) -- this used to be rejected as "3 legs found."
+  const tx = baseTx({
+    tokenTransfers: [
+      { mint: USDC_MINT, tokenAmount: 5000, fromUserAccount: WALLET, toUserAccount: "poolX" },
+      { mint: TOKEN_MINT, tokenAmount: 318533.13, fromUserAccount: "poolX", toUserAccount: WALLET },
+    ],
+    nativeTransfers: [{ amount: 27_000_000, fromUserAccount: "poolX", toUserAccount: WALLET }], // ~0.027 SOL
+  });
+
+  const result = parseSwapForWallet(tx, WALLET);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.swap.side, "buy");
+  assert.equal(result.swap.tokenAddress, TOKEN_MINT);
+  assert.equal(result.swap.tokenAmount, 318533.13);
+  assert.equal(result.swap.quoteMint, USDC_MINT);
+  assert.equal(result.swap.quoteAmount, 5000);
+  assert.equal(result.swap.quoteIsStable, true);
 });
