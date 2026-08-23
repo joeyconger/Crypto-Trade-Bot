@@ -557,6 +557,7 @@
       same trade would have made with zero lag, isolating how much of the result is pure latency cost.
     </p>
     <p class="research-note" id="tailSizeNote" style="margin-top:-8px"></p>
+    <div class="research-kpi-grid" id="tailByWalletGrid" style="display:none"></div>
     <div class="research-kpi-grid">
       <div class="card kpi">
         <div class="label">Simulated P&amp;L</div>
@@ -593,7 +594,7 @@
       <table>
         <thead>
           <tr>
-            <th>Token</th><th>Status</th><th>Size</th><th>Wallet entry</th><th>Sim entry</th><th>Entry slip</th>
+            <th>Wallet</th><th>Token</th><th>Status</th><th>Size</th><th>Wallet entry</th><th>Sim entry</th><th>Entry slip</th>
             <th>Entry MCap</th><th>MCap now/exit</th><th>MCap &Delta;</th>
             <th>Wallet exit</th><th>Sim exit</th><th>Exit slip</th><th>Detect latency</th>
             <th>Sim P&amp;L</th><th>Exact P&amp;L</th><th>Opened</th>
@@ -911,12 +912,15 @@
       const perTradeSize = status.startingBalanceUsd * status.positionSizePct / 100;
       document.getElementById("tailSizeNote").innerHTML =
         `Each mirrored trade is sized at <strong>${fmtUsd(perTradeSize)}</strong> ` +
-        `(${status.positionSizePct}% of a $${status.startingBalanceUsd.toLocaleString()} paper balance) &mdash; fixed per trade, not tied to how much omo bought.`;
+        `(${status.positionSizePct}% of a $${status.startingBalanceUsd.toLocaleString()} paper balance) &mdash; fixed per trade, not tied to how much the tailed wallet bought.`;
 
-      const [summary, trades] = await Promise.all([
+      const [summaryResp, trades] = await Promise.all([
         fetchJson("/api/tail/summary"),
         fetchJson("/api/tail/trades?limit=100"),
       ]);
+      const summary = summaryResp.overall;
+      const walletLabels = status.walletLabels || {};
+      const labelFor = (address) => walletLabels[address] || (address.slice(0, 4) + "…" + address.slice(-4));
 
       document.getElementById("tailKpiSimPnl").innerHTML = pnlSpan(summary.totalSimulatedPnlUsd, null).replace('<span class="', '<span class="value ');
       document.getElementById("tailKpiExactPnl").innerHTML = pnlSpan(summary.totalWalletExactPnlUsd, null).replace('<span class="', '<span class="value ');
@@ -931,6 +935,28 @@
       document.getElementById("tailKpiLatency").innerHTML = fmtMs(summary.avgEntryDetectionLatencyMs);
       document.getElementById("tailKpiSlippage").innerHTML = summary.avgEntrySlippageVsWalletPct == null ? "&mdash;" : fmtPct(summary.avgEntrySlippageVsWalletPct);
 
+      // Per-wallet breakdown -- only worth showing once more than one wallet
+      // is tailed at once; with a single wallet it would just repeat the
+      // overall KPIs above.
+      const byWalletGrid = document.getElementById("tailByWalletGrid");
+      if (summaryResp.byWallet && summaryResp.byWallet.length > 1) {
+        byWalletGrid.style.display = "";
+        byWalletGrid.innerHTML = summaryResp.byWallet.map((w) => {
+          const label = w.label || labelFor(w.walletAddress);
+          const pct = w.summary.totalSimulatedPnlPct;
+          const pctSpan = pct == null ? "&mdash;" : `<span class="${pct >= 0 ? 'up' : 'down'}">${fmtPct(pct)}</span>`;
+          return `
+          <div class="card kpi">
+            <div class="label" title="${esc(w.walletAddress)}">${esc(label)}</div>
+            <div class="value">${pctSpan}, ${pnlSpan(w.summary.totalSimulatedPnlUsd, null)}</div>
+            <div class="sub">${w.summary.tradeCount} closed &middot; ${w.summary.openCount} open</div>
+          </div>
+        `;
+        }).join("");
+      } else {
+        byWalletGrid.style.display = "none";
+      }
+
       document.getElementById("tailTradesEmpty").style.display = trades.length ? "none" : "block";
       document.getElementById("tailTradesBody").innerHTML = trades.map((t) => {
         // "now" for an open position (live), the exit-time figure once closed, null otherwise (unfillable).
@@ -940,6 +966,7 @@
           : null;
         return `
         <tr>
+          <td class="sym" title="${esc(t.wallet_address)}">${esc(labelFor(t.wallet_address))}</td>
           <td class="sym"><a href="https://solscan.io/token/${encodeURIComponent(t.token_address)}" target="_blank" rel="noopener" title="${esc(t.token_address)}" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor">${esc(t.token_symbol)}</a></td>
           <td><span class="pill ${t.status === 'closed' ? 'yes' : t.status.startsWith('unfillable') ? 'no' : 'none'}">${t.status.replace('_', ' ')}</span></td>
           <td>${fmtUsd(t.usd_size)}</td>

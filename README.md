@@ -673,6 +673,17 @@ guessed.
    it sees a matching transaction, which is the whole point (polling would
    add latency on top of everything the delay is already measuring).
 
+Multiple wallets can be tailed at once -- set `TAIL_WALLET_ADDRESSES` to a
+comma-separated list and make sure the Helius webhook watches all of them.
+Optionally set `TAIL_WALLET_LABELS` to a comma-separated list of display
+names, index-aligned with `TAIL_WALLET_ADDRESSES` (e.g.
+`TAIL_WALLET_ADDRESSES=addr1,addr2` + `TAIL_WALLET_LABELS=omo,Sling` labels
+the two wallets accordingly). It's purely cosmetic -- an address with no
+label just falls back to a shortened form in the dashboard. With more than
+one wallet tailed, the dashboard shows a per-wallet P&L breakdown (%, $,
+trade counts) alongside the combined "overall" numbers, and each row in the
+trades table is tagged with which wallet it came from.
+
 The webhook payload shape (Helius's "enhanced transaction" format) is this
 project's best understanding, unverified from this sandbox (no live network
 access here) -- same caveat as every Birdeye/GeckoTerminal integration

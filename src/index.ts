@@ -118,7 +118,7 @@ async function main() {
   const tailConfig = loadTailConfig();
   if (tailConfig.enabled) {
     initTailSchema();
-    for (const address of tailConfig.walletAddresses) upsertTailWallet(address, null);
+    for (const address of tailConfig.walletAddresses) upsertTailWallet(address, tailConfig.walletLabels.get(address) ?? null);
     logStartupCoverageGapIfAny(tailConfig.walletAddresses);
     console.log(
       `  wallet-tail (research, paper-only): watching ${tailConfig.walletAddresses.length} wallet(s), ` +

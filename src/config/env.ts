@@ -54,6 +54,12 @@ const envSchema = z.object({
   // -- defaults to the wallet this module was built to evaluate (omo /
   // omotrades.com) but any address(es) can be swapped in.
   TAIL_WALLET_ADDRESSES: z.string().default("HxwmEH84o3EuezCUZuBEEeKT6uMDv8R4VRi76ExB87St"),
+  // Comma-separated display labels, index-aligned with TAIL_WALLET_ADDRESSES
+  // (e.g. "omo,Sling" matching the addresses in the same order) -- purely
+  // cosmetic, for telling multiple tailed wallets apart in the dashboard/CLI
+  // per-wallet breakdown. A missing/empty entry for a given index falls back
+  // to a shortened address, same convention as resolveTokenSymbol.ts.
+  TAIL_WALLET_LABELS: z.string().default(""),
   // % of TAIL_STARTING_BALANCE_USD sized into each mirrored position -- this
   // module's own fixed-fraction sizing, unrelated to the main strategy's
   // riskPctPerTrade/riskPctPerTradeTierB.

@@ -63,6 +63,7 @@ export function createTailDashboardRouter(config: TailConfig): Router {
     res.json({
       enabled: config.enabled,
       walletAddresses: config.walletAddresses,
+      walletLabels: Object.fromEntries(config.walletLabels), // address -> label, only for wallets that have one configured
       positionSizePct: config.positionSizePct,
       simulatedDelaySeconds: config.simulatedDelaySeconds,
       startingBalanceUsd: config.startingBalanceUsd,
@@ -77,7 +78,22 @@ export function createTailDashboardRouter(config: TailConfig): Router {
 
   router.get("/summary", (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 1000, 5000);
-    res.json(computeTailSummary(getAllTailTrades(undefined, limit)));
+    const allTrades = getAllTailTrades(undefined, limit);
+
+    // Per-wallet breakdown -- the whole point once more than one wallet is
+    // tailed at once, otherwise a losing wallet's trades silently drag down
+    // (or a winning wallet's silently flatter) the combined "overall"
+    // number with no way to tell them apart.
+    const byWallet = config.walletAddresses.map((walletAddress) => ({
+      walletAddress,
+      label: config.walletLabels.get(walletAddress) ?? null,
+      summary: computeTailSummary(allTrades.filter((t) => t.wallet_address === walletAddress)),
+    }));
+
+    res.json({
+      overall: computeTailSummary(allTrades),
+      byWallet,
+    });
   });
 
   router.get("/webhook-log", (req, res) => {

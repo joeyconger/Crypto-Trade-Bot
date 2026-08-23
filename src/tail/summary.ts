@@ -7,6 +7,7 @@ export interface TailSummary {
   unfillableExitCount: number;
   winRate: number | null; // % of closed trades with pnl_usd > 0
   totalSimulatedPnlUsd: number;
+  totalSimulatedPnlPct: number | null; // sum(pnl_usd) / sum(usd_size) x 100 across closed trades -- blended return on capital actually deployed, not an average of per-trade percentages
   totalWalletExactPnlUsd: number;
   lagCostUsd: number; // totalWalletExactPnlUsd - totalSimulatedPnlUsd -- the P&L given up purely to being behind
   avgEntryDetectionLatencyMs: number | null;
@@ -39,6 +40,10 @@ export function computeTailSummary(trades: TailTradeRow[]): TailSummary {
     unfillableExitCount: trades.filter((t) => t.status === "unfillable_exit").length,
     winRate: closed.length > 0 ? (wins.length / closed.length) * 100 : null,
     totalSimulatedPnlUsd: closed.reduce((s, t) => s + (t.pnl_usd ?? 0), 0),
+    totalSimulatedPnlPct: (() => {
+      const totalDeployed = closed.reduce((s, t) => s + t.usd_size, 0);
+      return totalDeployed > 0 ? (closed.reduce((s, t) => s + (t.pnl_usd ?? 0), 0) / totalDeployed) * 100 : null;
+    })(),
     totalWalletExactPnlUsd: closed.reduce((s, t) => s + (t.wallet_exact_pnl_usd ?? 0), 0),
     lagCostUsd:
       closed.reduce((s, t) => s + (t.wallet_exact_pnl_usd ?? 0), 0) - closed.reduce((s, t) => s + (t.pnl_usd ?? 0), 0),
