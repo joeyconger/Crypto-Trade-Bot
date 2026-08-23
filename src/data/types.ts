@@ -18,6 +18,11 @@ export interface TokenOverview {
   liquidityUsd: number;
   volume24hUsd: number;
   priceChange24hPct: number;
+  // Optional -- both providers' token-overview responses include this
+  // alongside the fields above, so it costs nothing extra to read, but
+  // callers that only care about price/liquidity (most of them) can ignore
+  // it. Undefined if the provider's response didn't have a usable symbol.
+  symbol?: string;
 }
 
 export interface TopTradedToken {

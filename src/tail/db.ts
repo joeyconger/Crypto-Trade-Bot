@@ -198,6 +198,13 @@ export function markExitUnfillable(tradeId: number): void {
     .run(tradeId);
 }
 
+/** Backfills a real ticker onto a row that was recorded with the shortened-address fallback -- see dashboardRoutes.ts's self-healing re-resolve on read. */
+export function updateTailTradeSymbol(tradeId: number, symbol: string): void {
+  getDb()
+    .prepare(`UPDATE tail_trades SET token_symbol = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+    .run(symbol, tradeId);
+}
+
 export function getAllTailTrades(walletAddress?: string, limit = 500): TailTradeRow[] {
   if (walletAddress) {
     return getDb()

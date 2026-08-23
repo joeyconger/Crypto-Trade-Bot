@@ -82,6 +82,7 @@ export async function getTokenOverview(address: string): Promise<TokenOverview> 
     liquidityUsd: Number(data?.liquidity ?? 0),
     volume24hUsd: Number(data?.v24hUSD ?? data?.volume24h ?? 0),
     priceChange24hPct: Number(data?.priceChange24hPercent ?? 0),
+    symbol: typeof data?.symbol === "string" && data.symbol.length > 0 ? data.symbol : undefined,
   };
 }
 

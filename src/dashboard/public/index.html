@@ -900,7 +900,7 @@
       document.getElementById("tailTradesEmpty").style.display = trades.length ? "none" : "block";
       document.getElementById("tailTradesBody").innerHTML = trades.map((t) => `
         <tr>
-          <td class="sym">${esc(t.token_symbol)}</td>
+          <td class="sym"><a href="https://solscan.io/token/${encodeURIComponent(t.token_address)}" target="_blank" rel="noopener" title="${esc(t.token_address)}" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor">${esc(t.token_symbol)}</a></td>
           <td><span class="pill ${t.status === 'closed' ? 'yes' : t.status.startsWith('unfillable') ? 'no' : 'none'}">${t.status.replace('_', ' ')}</span></td>
           <td>${fmtUsd(t.usd_size)}</td>
           <td>${fmtPrice(t.wallet_entry_price_usd)}</td>

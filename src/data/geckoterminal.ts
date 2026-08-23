@@ -152,6 +152,7 @@ export async function getTokenOverview(address: string): Promise<TokenOverview> 
     liquidityUsd: Number(attrs?.total_reserve_in_usd ?? 0),
     volume24hUsd: Number(attrs?.volume_usd?.h24 ?? 0),
     priceChange24hPct: Number(attrs?.price_change_percentage?.h24 ?? 0),
+    symbol: typeof attrs?.symbol === "string" && attrs.symbol.length > 0 ? attrs.symbol : undefined,
   };
 }
 
