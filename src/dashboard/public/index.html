@@ -556,6 +556,7 @@
       pricing, the same way real execution would lag the wallet; "if filled at wallet's price" shows what the
       same trade would have made with zero lag, isolating how much of the result is pure latency cost.
     </p>
+    <p class="research-note" id="tailSizeNote" style="margin-top:-8px"></p>
     <div class="research-kpi-grid">
       <div class="card kpi">
         <div class="label">Simulated P&amp;L</div>
@@ -592,7 +593,7 @@
       <table>
         <thead>
           <tr>
-            <th>Token</th><th>Status</th><th>Wallet entry</th><th>Sim entry</th><th>Entry slip</th>
+            <th>Token</th><th>Status</th><th>Size</th><th>Wallet entry</th><th>Sim entry</th><th>Entry slip</th>
             <th>Wallet exit</th><th>Sim exit</th><th>Exit slip</th><th>Detect latency</th>
             <th>Sim P&amp;L</th><th>Exact P&amp;L</th><th>Opened</th>
           </tr>
@@ -873,6 +874,11 @@
       }
       section.style.display = "block";
 
+      const perTradeSize = status.startingBalanceUsd * status.positionSizePct / 100;
+      document.getElementById("tailSizeNote").innerHTML =
+        `Each mirrored trade is sized at <strong>${fmtUsd(perTradeSize)}</strong> ` +
+        `(${status.positionSizePct}% of a $${status.startingBalanceUsd.toLocaleString()} paper balance) &mdash; fixed per trade, not tied to how much omo bought.`;
+
       const [summary, trades] = await Promise.all([
         fetchJson("/api/tail/summary"),
         fetchJson("/api/tail/trades?limit=100"),
@@ -896,6 +902,7 @@
         <tr>
           <td class="sym">${esc(t.token_symbol)}</td>
           <td><span class="pill ${t.status === 'closed' ? 'yes' : t.status.startsWith('unfillable') ? 'no' : 'none'}">${t.status.replace('_', ' ')}</span></td>
+          <td>${fmtUsd(t.usd_size)}</td>
           <td>${fmtPrice(t.wallet_entry_price_usd)}</td>
           <td>${fmtPrice(t.sim_entry_fill_price_usd)}</td>
           <td>${t.entry_slippage_vs_wallet_pct == null ? "&mdash;" : fmtPct(t.entry_slippage_vs_wallet_pct)}</td>
