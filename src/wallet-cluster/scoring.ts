@@ -58,12 +58,36 @@ export interface ScoringResult {
   band: ConfidenceBand;
 }
 
-/** True when a majority of the token pairs with BOTH hold times known show the candidate exiting sooner than the main wallet -- undefined-hold-time tokens are excluded from this vote entirely, never treated as "no." */
+// How soon after the main wallet's buy a candidate's sell still counts as
+// "cashed out on the pump" rather than an unrelated, much-later exit. A
+// judgment call, same as everything else in this file -- 3 hours is
+// generous enough to cover a slower exit than an instant flip, without
+// counting "sold two weeks later" as the same pattern.
+const QUICK_EXIT_WINDOW_MINUTES = 180;
+
+/**
+ * True when a majority of the comparable tokens support "bought ahead of
+ * the main wallet, sold once the main wallet's buy likely pumped it."
+ * Prefers minutesFromMainWalletBuyToCandidateSell (computable as soon as the
+ * candidate has ANY observed sell) over candidateSoldSooner (needs the main
+ * wallet to have ALSO sold, which is often unavailable -- in this module's
+ * first real test run, unavailable for every single candidate). Falls back
+ * to candidateSoldSooner per-token only where the primary signal is missing.
+ * Tokens where NEITHER signal is available are excluded from the vote
+ * entirely, never treated as "no."
+ */
 function sellTimingSupportsPattern(sellTiming: SellTimingComparison[]): boolean {
-  const comparable = sellTiming.filter((s) => s.candidateSoldSooner !== null);
-  if (comparable.length === 0) return false;
-  const soonerCount = comparable.filter((s) => s.candidateSoldSooner).length;
-  return soonerCount / comparable.length > 0.5;
+  const votes = sellTiming
+    .map((s) => {
+      if (s.minutesFromMainWalletBuyToCandidateSell != null) {
+        return s.minutesFromMainWalletBuyToCandidateSell <= QUICK_EXIT_WINDOW_MINUTES;
+      }
+      return s.candidateSoldSooner;
+    })
+    .filter((v): v is boolean => v !== null);
+
+  if (votes.length === 0) return false;
+  return votes.filter(Boolean).length / votes.length > 0.5;
 }
 
 export function computeConfidenceScore(input: ScoringInput): ScoringResult {

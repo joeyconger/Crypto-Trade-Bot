@@ -9,21 +9,27 @@ function sleep(ms: number): Promise<void> {
 }
 
 export interface WalletTokenTrade {
-  buyAt: string | null;
-  sellAt: string | null; // earliest sell strictly after buyAt, if any
+  sellAt: string | null; // earliest sell strictly after sinceBuyAt, if any
 }
 
 /**
  * Scoped, cheaper cousin of fetchMainWalletTrades.ts -- looks for one
- * wallet's buy/sell of ONE specific token, rather than reconstructing its
- * whole trade history. Used for the per-candidate sell-timing comparison
- * (step 4 of the pipeline), so this only runs for wallets that already
- * cleared minOverlapCount, not every early buyer scanned in step 2.
+ * wallet's SELL of ONE specific token, anchored to a KNOWN buy timestamp
+ * (`sinceBuyAt`, from the pre-buy-window scan that already found this
+ * candidate) rather than independently re-deriving "the" buy. Re-deriving
+ * it was a real bug: if a candidate traded the same token more than once,
+ * picking its overall-earliest buy in this function's own scan could
+ * silently refer to a DIFFERENT entry than the one that actually put it in
+ * the pre-buy-window overlap, producing a hold time for the wrong trade
+ * entirely. Anchoring to the already-known buy removes that ambiguity.
+ *
+ * Used for the per-candidate sell-timing comparison (step 4 of the
+ * pipeline), so this only runs for wallets that already cleared
+ * minOverlapCount, not every early buyer scanned in step 2.
  */
-export async function fetchWalletTradeForToken(wallet: string, tokenAddress: string): Promise<WalletTokenTrade> {
-  let buyAt: string | null = null;
+export async function fetchWalletTradeForToken(wallet: string, tokenAddress: string, sinceBuyAt: string): Promise<WalletTokenTrade> {
+  const sinceMs = new Date(sinceBuyAt).getTime();
   let earliestSellAfterBuy: string | null = null;
-  const sells: string[] = [];
 
   let before: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
@@ -32,28 +38,20 @@ export async function fetchWalletTradeForToken(wallet: string, tokenAddress: str
     if (txs.length === 0) break;
 
     for (const tx of txs) {
-      const parsed = parseSwapForWallet(tx, wallet);
-      if (!parsed.ok || parsed.swap.tokenAddress !== tokenAddress) continue;
+      if (tx.timestamp * 1000 < sinceMs) continue; // older than the anchor buy -- not relevant to this hold period
 
-      if (parsed.swap.side === "buy") {
-        if (!buyAt || new Date(parsed.swap.onchainAt) < new Date(buyAt)) buyAt = parsed.swap.onchainAt;
-      } else {
-        sells.push(parsed.swap.onchainAt);
+      const parsed = parseSwapForWallet(tx, wallet);
+      if (!parsed.ok || parsed.swap.tokenAddress !== tokenAddress || parsed.swap.side !== "sell") continue;
+
+      if (!earliestSellAfterBuy || new Date(parsed.swap.onchainAt) < new Date(earliestSellAfterBuy)) {
+        earliestSellAfterBuy = parsed.swap.onchainAt;
       }
     }
 
+    const oldestTxMs = txs[txs.length - 1].timestamp * 1000;
     before = txs[txs.length - 1]?.signature;
-    // Once both a buy and at least one sell candidate are found, further
-    // (older) pages can't change the answer -- the buy can only get
-    // earlier, and we already want the earliest post-buy sell, which needs
-    // all sells gathered first; stop once we plausibly have both.
-    if (buyAt && sells.length > 0) break;
+    if (oldestTxMs < sinceMs) break; // paged past the anchor buy -- nothing older can be relevant
   }
 
-  if (buyAt) {
-    const afterBuy = sells.filter((s) => new Date(s) > new Date(buyAt!)).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
-    earliestSellAfterBuy = afterBuy[0] ?? null;
-  }
-
-  return { buyAt, sellAt: earliestSellAfterBuy };
+  return { sellAt: earliestSellAfterBuy };
 }

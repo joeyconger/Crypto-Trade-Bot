@@ -28,10 +28,17 @@ function candidateBlock(c: CandidateResult, index: number): string {
   } else if (c.sellTiming.length === 0) {
     lines.push(`  sell timing: no comparable data`);
   } else {
-    lines.push(`  sell timing (per token, candidate vs. main wallet hold time):`);
+    lines.push(`  sell timing (per token):`);
     for (const s of c.sellTiming) {
-      const verdict = s.candidateSoldSooner == null ? "n/a" : s.candidateSoldSooner ? "sold sooner" : "held longer/same";
-      lines.push(`    - ${s.tokenSymbol}: candidate ${pct(s.candidateHoldMinutes)} vs. main wallet ${pct(s.mainWalletHoldMinutes)} (${verdict})`);
+      const afterMainBuy =
+        s.minutesFromMainWalletBuyToCandidateSell == null
+          ? "no sell observed after the main wallet's buy"
+          : `sold ${s.minutesFromMainWalletBuyToCandidateSell.toFixed(0)}min after the main wallet's buy`;
+      const vsMain =
+        s.candidateSoldSooner == null
+          ? ""
+          : ` (candidate held ${pct(s.candidateHoldMinutes)} vs. main wallet's own ${pct(s.mainWalletHoldMinutes)})`;
+      lines.push(`    - ${s.tokenSymbol}: ${afterMainBuy}${vsMain}`);
     }
   }
 

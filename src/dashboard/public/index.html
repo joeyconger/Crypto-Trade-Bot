@@ -1011,11 +1011,18 @@
       document.getElementById("walletClusterBody").innerHTML = candidates.map((c) => {
         const overlapTokens = JSON.parse(c.overlap_tokens_json || "[]");
         const sellTiming = JSON.parse(c.sell_timing_json || "[]");
+        // "sold shortly after main wallet's buy" (computable the moment the
+        // candidate has ANY sell) is the primary metric here -- the
+        // hold-time-vs-main-wallet comparison needs the main wallet to have
+        // ALSO sold, which is frequently unavailable. See scoring.ts.
+        const quickExits = sellTiming.filter((s) => s.minutesFromMainWalletBuyToCandidateSell != null);
         const sellSummary = !c.sell_timing_checked
           ? "unknown (check failed)"
           : sellTiming.length === 0
             ? "n/a"
-            : `${sellTiming.filter((s) => s.candidateSoldSooner).length}/${sellTiming.filter((s) => s.candidateSoldSooner != null).length} sooner`;
+            : quickExits.length > 0
+              ? `${quickExits.length}/${sellTiming.length} sold after main buy`
+              : `${sellTiming.filter((s) => s.candidateSoldSooner).length}/${sellTiming.filter((s) => s.candidateSoldSooner != null).length} sooner`;
         const fundingSummary = !c.funding_link_checked
           ? "unknown (check failed)"
           : c.funding_link_found

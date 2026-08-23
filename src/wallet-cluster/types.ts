@@ -34,6 +34,16 @@ export interface SellTimingComparison {
   candidateHoldMinutes: number | null; // null if the candidate hasn't sold yet (or sell wasn't observed)
   mainWalletHoldMinutes: number | null; // null if the main wallet hasn't sold yet
   candidateSoldSooner: boolean | null; // null when either hold time is unavailable -- never guessed
+  // How long after the MAIN WALLET'S BUY the candidate sold -- the "bought
+  // ahead of the main wallet, then sold once the main wallet's buy pumped
+  // it" pattern. Deliberately separate from candidateSoldSooner above:
+  // this is computable the moment the candidate has ANY observed sell, even
+  // when the main wallet hasn't sold at all yet (the common case) -- it
+  // doesn't depend on the main wallet's hold time the way the sooner/later
+  // comparison does. Null if the candidate hasn't sold, or sold BEFORE the
+  // main wallet's buy (a negative value would be meaningless here -- that's
+  // not "sold after the pump," that's a different, unrelated exit).
+  minutesFromMainWalletBuyToCandidateSell: number | null;
 }
 
 export type ConfidenceBand = "low" | "moderate" | "high";

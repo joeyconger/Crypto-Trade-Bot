@@ -10,6 +10,19 @@ function timing(candidateSoldSooner: boolean | null): SellTimingComparison {
     candidateHoldMinutes: candidateSoldSooner == null ? null : 10,
     mainWalletHoldMinutes: candidateSoldSooner == null ? null : 20,
     candidateSoldSooner,
+    minutesFromMainWalletBuyToCandidateSell: null,
+  };
+}
+
+/** The primary, more-often-available signal: how soon after the main wallet's buy the candidate sold. Main-wallet hold time deliberately left unavailable, since that's the common real-world case this metric exists to cover. */
+function quickExitTiming(minutesFromMainWalletBuyToCandidateSell: number | null): SellTimingComparison {
+  return {
+    tokenAddress: "T",
+    tokenSymbol: "TKN",
+    candidateHoldMinutes: null,
+    mainWalletHoldMinutes: null,
+    candidateSoldSooner: null,
+    minutesFromMainWalletBuyToCandidateSell,
   };
 }
 
@@ -71,6 +84,38 @@ test("computeConfidenceScore: sell-timing pattern only counts comparable (non-nu
     feePayerOverlapFound: false,
   });
   assert.ok(majoritySooner.score > noComparableData.score);
+});
+
+test("computeConfidenceScore: the primary sell-timing signal (sold shortly after the main wallet's buy) works even when the main wallet hasn't sold at all -- the common real-world case", () => {
+  const withQuickExits = computeConfidenceScore({
+    overlapCount: 6,
+    fundingLinkHopDistance: null,
+    sellTiming: [quickExitTiming(15), quickExitTiming(30), quickExitTiming(5)], // all within the quick-exit window
+    feePayerOverlapFound: false,
+  });
+  const withoutSellData = computeConfidenceScore({
+    overlapCount: 6,
+    fundingLinkHopDistance: null,
+    sellTiming: [quickExitTiming(null), quickExitTiming(null)], // no sells observed at all
+    feePayerOverlapFound: false,
+  });
+  assert.ok(withQuickExits.score > withoutSellData.score);
+});
+
+test("computeConfidenceScore: a sell far outside the quick-exit window doesn't count as supporting the pattern", () => {
+  const slowExit = computeConfidenceScore({
+    overlapCount: 6,
+    fundingLinkHopDistance: null,
+    sellTiming: [quickExitTiming(60 * 24 * 30)], // sold a month after the main wallet's buy -- not a pump-and-dump pattern
+    feePayerOverlapFound: false,
+  });
+  const noData = computeConfidenceScore({
+    overlapCount: 6,
+    fundingLinkHopDistance: null,
+    sellTiming: [],
+    feePayerOverlapFound: false,
+  });
+  assert.equal(slowExit.score, noData.score, "a month-later sell shouldn't score any differently than no sell-timing data at all");
 });
 
 test("computeConfidenceScore: score is always clamped to [0, 100]", () => {

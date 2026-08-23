@@ -53,15 +53,27 @@ async function buildSellTiming(
 
   for (const overlap of overlapTokens) {
     const mainTrade = mainTradeByToken.get(overlap.tokenAddress);
-    const candidateTrade = await fetchWalletTradeForToken(candidateWallet, overlap.tokenAddress);
+    // Anchored to the ALREADY-KNOWN buy from the pre-buy-window scan
+    // (overlap.candidateBuyAt), not re-derived -- see fetchWalletTradeForToken.ts.
+    const candidateTrade = await fetchWalletTradeForToken(candidateWallet, overlap.tokenAddress, overlap.candidateBuyAt);
 
     const mainWalletHoldMinutes =
       mainTrade?.sellAt != null
         ? (new Date(mainTrade.sellAt).getTime() - new Date(mainTrade.buyAt).getTime()) / 60000
         : null;
     const candidateHoldMinutes =
-      candidateTrade.buyAt && candidateTrade.sellAt
-        ? (new Date(candidateTrade.sellAt).getTime() - new Date(candidateTrade.buyAt).getTime()) / 60000
+      candidateTrade.sellAt != null
+        ? (new Date(candidateTrade.sellAt).getTime() - new Date(overlap.candidateBuyAt).getTime()) / 60000
+        : null;
+
+    // The "bought ahead of the main wallet, sold once the main wallet's buy
+    // pumped it" pattern -- computable as soon as the candidate has ANY
+    // observed sell, unlike candidateSoldSooner below which needs the main
+    // wallet to have ALSO sold (often unavailable, as it was for every
+    // candidate in this module's first real test run).
+    const minutesFromMainWalletBuyToCandidateSell =
+      candidateTrade.sellAt != null
+        ? (new Date(candidateTrade.sellAt).getTime() - new Date(overlap.mainWalletBuyAt).getTime()) / 60000
         : null;
 
     comparisons.push({
@@ -71,6 +83,14 @@ async function buildSellTiming(
       mainWalletHoldMinutes,
       candidateSoldSooner:
         candidateHoldMinutes != null && mainWalletHoldMinutes != null ? candidateHoldMinutes < mainWalletHoldMinutes : null,
+      // Negative means the candidate sold BEFORE the main wallet's buy --
+      // that's a different, unrelated exit, not "sold after the pump," so
+      // it's not reported as a positive number here (see scoring.ts for how
+      // this gets interpreted).
+      minutesFromMainWalletBuyToCandidateSell:
+        minutesFromMainWalletBuyToCandidateSell != null && minutesFromMainWalletBuyToCandidateSell > 0
+          ? minutesFromMainWalletBuyToCandidateSell
+          : null,
     });
   }
 
