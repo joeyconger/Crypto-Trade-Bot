@@ -37,13 +37,51 @@ export function initTailSchema(): void {
   initialized = true;
 }
 
+export interface TailWalletRow {
+  address: string;
+  label: string | null;
+  enabled: 0 | 1;
+  created_at: string;
+}
+
+/**
+ * Adds a wallet, or re-enables + relabels one that already exists (covers
+ * both the startup env-seed path and the dashboard's "add wallet" action --
+ * re-adding a previously-removed address should turn tailing back on for
+ * it, not silently no-op because the row was already there).
+ */
 export function upsertTailWallet(address: string, label: string | null): void {
   getDb()
     .prepare(
-      `INSERT INTO tail_wallets (address, label) VALUES (?, ?)
-       ON CONFLICT(address) DO UPDATE SET label = excluded.label`,
+      `INSERT INTO tail_wallets (address, label, enabled) VALUES (?, ?, 1)
+       ON CONFLICT(address) DO UPDATE SET label = excluded.label, enabled = 1`,
     )
     .run(address, label);
+}
+
+/**
+ * Soft-disable rather than delete -- tail_trades.wallet_address has a
+ * foreign key into this table, and a removed wallet's trade history should
+ * stay visible in the dashboard's per-wallet breakdown, just no longer
+ * actively watched. Note: any position still `open` for this wallet will
+ * never get a matching sell webhook once it's also dropped from the Helius
+ * watch list, so it stays open indefinitely -- the dashboard should warn
+ * about this before removal, not just silently strand it.
+ */
+export function setTailWalletEnabled(address: string, enabled: boolean): void {
+  getDb().prepare(`UPDATE tail_wallets SET enabled = ? WHERE address = ?`).run(enabled ? 1 : 0, address);
+}
+
+/** All tailed wallets ever configured, enabled or not -- the source of truth for the dashboard's per-wallet breakdown and management UI. */
+export function getTailWallets(): TailWalletRow[] {
+  return getDb().prepare(`SELECT * FROM tail_wallets ORDER BY created_at ASC`).all() as TailWalletRow[];
+}
+
+/** Just the addresses currently being watched -- what webhook.ts's per-tx loop iterates. */
+export function getActiveTailWalletAddresses(): string[] {
+  return (getDb().prepare(`SELECT address FROM tail_wallets WHERE enabled = 1`).all() as { address: string }[]).map(
+    (r) => r.address,
+  );
 }
 
 // ---- tail_trades ----

@@ -557,6 +557,23 @@
       same trade would have made with zero lag, isolating how much of the result is pure latency cost.
     </p>
     <p class="research-note" id="tailSizeNote" style="margin-top:-8px"></p>
+
+    <div class="card" style="margin-bottom:16px;padding:12px 16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <strong style="font-size:0.9em">Tailed wallets</strong>
+        <span id="tailHeliusSyncNote" class="research-note" style="margin:0"></span>
+      </div>
+      <div id="tailWalletList" style="margin:10px 0"></div>
+      <form id="tailAddWalletForm" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input id="tailAddWalletAddress" type="text" placeholder="Wallet address" spellcheck="false"
+          style="flex:1;min-width:220px;padding:6px 10px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-primary);font-family:inherit" />
+        <input id="tailAddWalletLabel" type="text" placeholder="Label (optional)" spellcheck="false"
+          style="width:140px;padding:6px 10px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-primary);font-family:inherit" />
+        <button type="submit">Add wallet</button>
+      </form>
+      <p class="research-note" id="tailAddWalletStatus" style="margin-top:8px"></p>
+    </div>
+
     <div class="research-kpi-grid" id="tailByWalletGrid" style="display:none"></div>
     <div class="research-kpi-grid">
       <div class="card kpi">
@@ -914,6 +931,22 @@
         `Each mirrored trade is sized at <strong>${fmtUsd(perTradeSize)}</strong> ` +
         `(${status.positionSizePct}% of a $${status.startingBalanceUsd.toLocaleString()} paper balance) &mdash; fixed per trade, not tied to how much the tailed wallet bought.`;
 
+      document.getElementById("tailHeliusSyncNote").textContent = status.heliusSyncConfigured
+        ? "Add/remove syncs the Helius webhook automatically."
+        : "Helius auto-sync not configured (TAIL_HELIUS_WEBHOOK_ID unset) -- update the webhook's watched addresses yourself after adding/removing.";
+
+      const wallets = status.wallets || [];
+      document.getElementById("tailWalletList").innerHTML = wallets.length
+        ? wallets.map((w) => `
+          <div style="display:flex;align-items:center;gap:8px;padding:4px 0;${w.enabled ? "" : "opacity:0.5"}">
+            <span class="pill ${w.enabled ? "yes" : "no"}">${w.enabled ? "tailing" : "removed"}</span>
+            <span style="font-weight:600">${esc(w.label || (w.address.slice(0, 4) + "…" + w.address.slice(-4)))}</span>
+            <span class="research-note" style="margin:0;font-size:0.85em" title="${esc(w.address)}">${esc(w.address.slice(0, 4))}&hellip;${esc(w.address.slice(-4))}</span>
+            ${w.enabled ? `<button type="button" class="danger" style="margin-left:auto;padding:2px 10px" onclick="removeTailWallet('${esc(w.address)}')">Remove</button>` : ""}
+          </div>
+        `).join("")
+        : `<span class="research-note" style="margin:0">No wallets tailed yet -- add one below.</span>`;
+
       const [summaryResp, trades] = await Promise.all([
         fetchJson("/api/tail/summary"),
         fetchJson("/api/tail/trades?limit=100"),
@@ -992,6 +1025,58 @@
       if (tailModuleAvailable !== false) console.error("tail refresh failed", err);
       tailModuleAvailable = false;
       section.style.display = "none";
+    }
+  }
+
+  document.getElementById("tailAddWalletForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const addressInput = document.getElementById("tailAddWalletAddress");
+    const labelInput = document.getElementById("tailAddWalletLabel");
+    const statusEl = document.getElementById("tailAddWalletStatus");
+    const address = addressInput.value.trim();
+    const label = labelInput.value.trim();
+
+    statusEl.textContent = "Adding…";
+    statusEl.className = "research-note";
+    try {
+      const res = await fetch("/api/tail/wallets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address, label: label || undefined }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        statusEl.textContent = body.error || "Failed to add wallet.";
+        statusEl.style.color = "var(--critical)";
+        return;
+      }
+      addressInput.value = "";
+      labelInput.value = "";
+      statusEl.style.color = "";
+      statusEl.textContent = body.heliusSynced
+        ? "Added -- now tailing, Helius webhook updated automatically."
+        : `Added to the dashboard, but Helius wasn't updated automatically (${body.heliusError || body.heliusSkippedReason || "unknown reason"}) -- add it in Helius's dashboard too.`;
+      await refreshTail();
+    } catch (err) {
+      statusEl.textContent = "Failed to add wallet: " + (err && err.message ? err.message : String(err));
+      statusEl.style.color = "var(--critical)";
+    }
+  });
+
+  async function removeTailWallet(address) {
+    if (!confirm("Remove this wallet from tailing? Its trade history stays visible, but any currently open position for it will never see a matching sell once it's dropped.")) return;
+    const statusEl = document.getElementById("tailAddWalletStatus");
+    try {
+      const res = await fetch(`/api/tail/wallets/${encodeURIComponent(address)}`, { method: "DELETE" });
+      const body = await res.json();
+      let msg = body.heliusSynced ? "Removed -- Helius webhook updated automatically." : `Removed from the dashboard, but Helius wasn't updated automatically (${body.heliusError || body.heliusSkippedReason || "unknown reason"}) -- remove it in Helius's dashboard too.`;
+      if (body.strandedOpenCount > 0) msg += ` Note: ${body.strandedOpenCount} open position(s) for this wallet will stay open indefinitely.`;
+      statusEl.style.color = "";
+      statusEl.textContent = msg;
+      await refreshTail();
+    } catch (err) {
+      statusEl.textContent = "Failed to remove wallet: " + (err && err.message ? err.message : String(err));
+      statusEl.style.color = "var(--critical)";
     }
   }
 

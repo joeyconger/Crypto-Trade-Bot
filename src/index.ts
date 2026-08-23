@@ -7,7 +7,7 @@ import { startDashboardServer } from "./dashboard/server.js";
 import { getBotKeypair } from "./solana/keypair.js";
 import { getConnection } from "./solana/connection.js";
 import { loadTailConfig } from "./tail/config.js";
-import { initTailSchema, upsertTailWallet } from "./tail/db.js";
+import { initTailSchema, upsertTailWallet, getActiveTailWalletAddresses } from "./tail/db.js";
 import { logStartupCoverageGapIfAny } from "./tail/webhook.js";
 
 // Per technical-trigger scan (OHLCV fetch + fib/RSI/volume/close checks) for
@@ -118,10 +118,16 @@ async function main() {
   const tailConfig = loadTailConfig();
   if (tailConfig.enabled) {
     initTailSchema();
-    for (const address of tailConfig.walletAddresses) upsertTailWallet(address, tailConfig.walletLabels.get(address) ?? null);
-    logStartupCoverageGapIfAny(tailConfig.walletAddresses);
+    // Seeds tail_wallets from env on a fresh database, or picks up an
+    // address added directly to Railway's env vars -- a no-op for any
+    // address already there (e.g. previously added via the dashboard).
+    for (const address of tailConfig.envSeedWalletAddresses) {
+      upsertTailWallet(address, tailConfig.envSeedWalletLabels.get(address) ?? null);
+    }
+    const activeWallets = getActiveTailWalletAddresses();
+    logStartupCoverageGapIfAny(activeWallets);
     console.log(
-      `  wallet-tail (research, paper-only): watching ${tailConfig.walletAddresses.length} wallet(s), ` +
+      `  wallet-tail (research, paper-only): watching ${activeWallets.length} wallet(s) (DB-managed -- add/remove via the dashboard), ` +
         `${tailConfig.positionSizePct}% sizing, ${tailConfig.simulatedDelaySeconds}s simulated delay, ` +
         `$${tailConfig.startingBalanceUsd} own paper balance -- register the Helius webhook at POST /api/tail/webhook (see README)`,
     );

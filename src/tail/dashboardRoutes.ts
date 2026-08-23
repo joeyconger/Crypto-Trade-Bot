@@ -1,8 +1,24 @@
 import express, { type Router } from "express";
 import type { TailConfig } from "./config.js";
-import { getAllTailTrades, getRecentTailWebhookLog, getRecentTailCoverageGaps, updateTailTradeSymbol, type TailTradeRow } from "./db.js";
+import {
+  getAllTailTrades,
+  getRecentTailWebhookLog,
+  getRecentTailCoverageGaps,
+  updateTailTradeSymbol,
+  getTailWallets,
+  upsertTailWallet,
+  setTailWalletEnabled,
+  type TailTradeRow,
+} from "./db.js";
 import { computeTailSummary } from "./summary.js";
 import { getTokenOverview } from "../data/priceProvider.js";
+import { addAddressToWebhook, removeAddressFromWebhook } from "../data/heliusWebhook.js";
+
+// Solana addresses are base58 (no 0/O/I/l), typically 32-44 chars. Not a
+// full validity check (doesn't confirm the account exists or is even a
+// wallet) -- just enough to reject an obvious typo/garbage input before it
+// gets persisted and sent to Helius.
+const SOLANA_ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 // Matches tokenSymbolFor's shortened-address fallback in mirror.ts (e.g.
 // "FsLJ…pump") -- a real ticker essentially never has this exact shape, so
@@ -60,14 +76,80 @@ export function createTailDashboardRouter(config: TailConfig): Router {
   const router = express.Router();
 
   router.get("/status", (_req, res) => {
+    const wallets = getTailWallets();
     res.json({
       enabled: config.enabled,
-      walletAddresses: config.walletAddresses,
-      walletLabels: Object.fromEntries(config.walletLabels), // address -> label, only for wallets that have one configured
+      wallets: wallets.map((w) => ({ address: w.address, label: w.label, enabled: !!w.enabled })),
+      // Kept for existing callers -- includes disabled wallets too (a
+      // removed wallet's past trades still need a label to display).
+      walletLabels: Object.fromEntries(wallets.filter((w) => w.label).map((w) => [w.address, w.label as string])),
       positionSizePct: config.positionSizePct,
       simulatedDelaySeconds: config.simulatedDelaySeconds,
       startingBalanceUsd: config.startingBalanceUsd,
+      // Whether adding/removing a wallet in the dashboard will also update
+      // the Helius webhook automatically, or just this app's own DB.
+      heliusSyncConfigured: !!config.heliusWebhookId,
     });
+  });
+
+  /**
+   * Adds (or re-enables) a tailed wallet, and -- if TAIL_HELIUS_WEBHOOK_ID is
+   * set -- adds it to the Helius webhook's watched-address list too, so
+   * tailing actually starts without a manual step in Helius's dashboard.
+   * The DB write always happens; the Helius call is best-effort and its
+   * outcome is reported back rather than failing the whole request, since a
+   * wallet added here but not yet in Helius is still a useful, correctable
+   * state (not silently broken).
+   */
+  router.post("/wallets", async (req, res) => {
+    const address = String(req.body?.address ?? "").trim();
+    const label = req.body?.label ? String(req.body.label).trim() : null;
+
+    if (!SOLANA_ADDRESS_PATTERN.test(address)) {
+      res.status(400).json({ error: "not a valid-looking Solana address" });
+      return;
+    }
+
+    upsertTailWallet(address, label);
+
+    if (!config.heliusWebhookId) {
+      res.json({ ok: true, heliusSynced: false, heliusSkippedReason: "TAIL_HELIUS_WEBHOOK_ID not set -- add this address to your Helius webhook manually" });
+      return;
+    }
+    try {
+      await addAddressToWebhook(config.heliusWebhookId, address);
+      res.json({ ok: true, heliusSynced: true });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      res.json({ ok: true, heliusSynced: false, heliusError: detail });
+    }
+  });
+
+  /**
+   * Soft-removes a tailed wallet (kept in the DB, disabled -- its trade
+   * history stays visible) and, if configured, removes it from the Helius
+   * webhook too. Any position still `open` for this wallet will never see
+   * its matching sell once Helius stops forwarding this wallet's
+   * transactions, so the response includes how many would be stranded --
+   * the dashboard should surface that before the user confirms.
+   */
+  router.delete("/wallets/:address", async (req, res) => {
+    const address = req.params.address;
+    const strandedOpenCount = getAllTailTrades(address, 5000).filter((t) => t.status === "open").length;
+
+    setTailWalletEnabled(address, false);
+
+    if (!config.heliusWebhookId) {
+      res.json({ ok: true, strandedOpenCount, heliusSynced: false, heliusSkippedReason: "TAIL_HELIUS_WEBHOOK_ID not set -- remove this address from your Helius webhook manually" });
+      return;
+    }
+    try {
+      await removeAddressFromWebhook(config.heliusWebhookId, address);
+      res.json({ ok: true, strandedOpenCount, heliusSynced: true });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      res.json({ ok: true, strandedOpenCount, heliusSynced: false, heliusError: detail });
+    }
   });
 
   router.get("/trades", async (req, res) => {
@@ -83,11 +165,14 @@ export function createTailDashboardRouter(config: TailConfig): Router {
     // Per-wallet breakdown -- the whole point once more than one wallet is
     // tailed at once, otherwise a losing wallet's trades silently drag down
     // (or a winning wallet's silently flatter) the combined "overall"
-    // number with no way to tell them apart.
-    const byWallet = config.walletAddresses.map((walletAddress) => ({
-      walletAddress,
-      label: config.walletLabels.get(walletAddress) ?? null,
-      summary: computeTailSummary(allTrades.filter((t) => t.wallet_address === walletAddress)),
+    // number with no way to tell them apart. Includes disabled (removed)
+    // wallets too, since their trade history shouldn't just disappear --
+    // the dashboard can gray those out using the `enabled` flag.
+    const byWallet = getTailWallets().map((w) => ({
+      walletAddress: w.address,
+      label: w.label,
+      enabled: !!w.enabled,
+      summary: computeTailSummary(allTrades.filter((t) => t.wallet_address === w.address)),
     }));
 
     res.json({

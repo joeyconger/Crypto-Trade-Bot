@@ -3,15 +3,17 @@ import type { HeliusTransaction } from "../data/helius.js";
 import type { TailConfig } from "./config.js";
 import { parseSwapForWallet } from "./parseSwap.js";
 import { handleParsedBuy, handleParsedSell } from "./mirror.js";
-import { insertTailWebhookLog, insertTailCoverageGap, getLastTailWebhookReceivedAt } from "./db.js";
+import { insertTailWebhookLog, insertTailCoverageGap, getLastTailWebhookReceivedAt, getActiveTailWalletAddresses } from "./db.js";
 
 /**
  * Push-based Helius webhook receiver -- NOT a poller. Register this route's
  * public URL (https://<your-deploy>/api/tail/webhook) as an "Enhanced" /
- * SWAP-type webhook in the Helius dashboard, watching the wallet address(es)
- * in TAIL_WALLET_ADDRESSES. See README's wallet-tail section for the exact
- * setup steps (a one-time action in your own Helius account -- not
- * something this code can do for you).
+ * SWAP-type webhook in the Helius dashboard, watching the wallet(s) tailed.
+ * The watch list is DB-driven (tail_wallets, managed via the dashboard's
+ * add/remove wallet actions -- see dashboardRoutes.ts), re-read fresh on
+ * every incoming delivery rather than fixed at startup, so a wallet added
+ * through the dashboard is tailed immediately without a restart. See
+ * README's wallet-tail section for the Helius-side setup.
  *
  * Responds 200 as fast as possible, BEFORE running any of the simulated
  * pipeline delay or price lookups (see mirror.ts) -- holding the connection
@@ -40,8 +42,9 @@ export function createTailWebhookRouter(config: TailConfig): Router {
     const body = req.body;
     const txs: HeliusTransaction[] = Array.isArray(body) ? body : body ? [body] : [];
 
+    const activeWallets = getActiveTailWalletAddresses();
     for (const tx of txs) {
-      for (const walletAddress of config.walletAddresses) {
+      for (const walletAddress of activeWallets) {
         if (!isWalletInvolved(tx, walletAddress)) continue;
 
         void (async () => {

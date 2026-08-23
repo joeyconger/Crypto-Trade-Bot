@@ -673,16 +673,34 @@ guessed.
    it sees a matching transaction, which is the whole point (polling would
    add latency on top of everything the delay is already measuring).
 
-Multiple wallets can be tailed at once -- set `TAIL_WALLET_ADDRESSES` to a
-comma-separated list and make sure the Helius webhook watches all of them.
-Optionally set `TAIL_WALLET_LABELS` to a comma-separated list of display
-names, index-aligned with `TAIL_WALLET_ADDRESSES` (e.g.
-`TAIL_WALLET_ADDRESSES=addr1,addr2` + `TAIL_WALLET_LABELS=omo,Sling` labels
-the two wallets accordingly). It's purely cosmetic -- an address with no
-label just falls back to a shortened form in the dashboard. With more than
-one wallet tailed, the dashboard shows a per-wallet P&L breakdown (%, $,
-trade counts) alongside the combined "overall" numbers, and each row in the
-trades table is tagged with which wallet it came from.
+Multiple wallets can be tailed at once. `TAIL_WALLET_ADDRESSES` (+ optional
+index-aligned `TAIL_WALLET_LABELS`, e.g. `addr1,addr2` + `omo,Sling`) seeds
+the initial list on first startup, but the actual watch list lives in the
+database (`tail_wallets` table) from then on -- wallets can be added or
+removed live from the dashboard's "Tailed wallets" panel, no redeploy or env
+var edit needed. Labels are purely cosmetic -- an address with none just
+falls back to a shortened form. With more than one wallet tailed, the
+dashboard shows a per-wallet P&L breakdown (%, $, trade counts) alongside
+the combined "overall" numbers, and each row in the trades table is tagged
+with which wallet it came from. Removing a wallet disables it (its trade
+history stays visible, grayed out) rather than deleting it outright.
+
+#### Auto-syncing the Helius webhook when adding/removing wallets
+
+Adding a wallet in the dashboard doesn't automatically make Helius start
+sending its transactions -- Helius only forwards whatever address list is
+configured on *your* webhook. To close that gap, set
+`TAIL_HELIUS_WEBHOOK_ID` to your webhook's ID (the last segment of its URL,
+e.g. `https://api.helius.xyz/v0/webhooks/<this-part>` -- also visible via
+Helius's webhook API or dashboard). With it set, the dashboard's add/remove
+actions also call Helius's API to update that webhook's `accountAddresses`
+in place, so tailing actually starts/stops without a manual step. Without
+it, wallets added/removed in the dashboard still take effect on this app's
+side immediately; you just also need to update the webhook's address list
+yourself in Helius's dashboard. Either way, the dashboard tells you which
+happened after each add/remove, since the Helius call is unverified from
+this sandbox (no live network access here) and best-effort -- a failure
+there never blocks the wallet from being added/removed on this app's side.
 
 The webhook payload shape (Helius's "enhanced transaction" format) is this
 project's best understanding, unverified from this sandbox (no live network

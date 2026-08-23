@@ -75,6 +75,13 @@ const envSchema = z.object({
   // webhook). Optional but strongly recommended -- unset means the webhook
   // endpoint accepts unauthenticated POSTs from anyone who finds the URL.
   TAIL_WEBHOOK_SECRET: z.string().optional(),
+  // Helius webhook ID (from the webhook's URL/API response when you created
+  // it, e.g. https://api.helius.xyz/v0/webhooks/<this-id>). Optional -- only
+  // needed to let the dashboard's "add/remove tailed wallet" actions call
+  // Helius's API to keep that webhook's watched-address list in sync
+  // automatically. Without it, wallets added in the dashboard still get
+  // tailed once you add them to the webhook yourself in Helius's dashboard.
+  TAIL_HELIUS_WEBHOOK_ID: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema> & {
