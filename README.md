@@ -196,6 +196,23 @@ signal log.
 Everything else in `.env.example` has a sane default (poll interval, paper
 starting balance, dashboard port, DB path, watchlist config path).
 
+### Turning the main strategy off completely
+
+The dashboard's Pause button stops new entries but still runs the poll loop
+every cycle to check whether it should un-pause -- fine for a short break,
+but it means the process is still alive and would resume scanning (and
+burning Helius/price-provider calls) the moment anyone hits Resume, on
+purpose or by accident.
+
+To actually stop it -- no scanning, no API calls, no new positions, until
+you deliberately turn it back on -- set `MAIN_STRATEGY_ENABLED=false`. The
+poll loop is never started in the first place; the dashboard shows a
+`disabled` state and a Pause/Resume button that's disabled (there's nothing
+running for it to act on). This only affects the main fib/RSI strategy --
+the wallet-tail and wallet-clustering research modules are independent and
+keep running regardless. Unset it (or set it to anything but `false`) and
+redeploy to turn the strategy back on.
+
 ### Price/OHLCV data provider: Birdeye or GeckoTerminal
 
 `PRICE_PROVIDER` picks which service serves OHLCV candles, current price,

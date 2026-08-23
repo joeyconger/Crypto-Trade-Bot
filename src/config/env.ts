@@ -35,6 +35,20 @@ const envSchema = z.object({
 
   DASHBOARD_PORT: z.coerce.number().int().positive().default(4000),
 
+  // Hard kill switch for the main fib/RSI strategy -- default on (unset or
+  // anything but the literal string "false" keeps it running). Set to
+  // "false" to stop it completely: no poll loop is even started, so it
+  // makes zero Helius/price-provider calls and opens no new positions,
+  // rather than relying on the DB-backed pause flag (bot_state.paused,
+  // toggled from the dashboard's Pause/Resume button) which still requires
+  // the loop to be running to check it. The tail and wallet-cluster
+  // research modules are unaffected -- they're fully separate and keep
+  // running regardless of this flag.
+  MAIN_STRATEGY_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v?.toLowerCase() !== "false"),
+
   // Virtual bankroll paper mode sizes positions against. Position sizing is a
   // fixed % of this starting balance (not compounding equity) -- simple and
   // predictable for v1.

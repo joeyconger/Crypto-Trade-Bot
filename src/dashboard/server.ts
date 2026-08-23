@@ -52,13 +52,18 @@ async function resolveMode(): Promise<{ mode: "paper" | "live"; bankrollUsd: num
 }
 
 /**
- * A single, unambiguous run state -- paused (manual) / halted (a circuit
- * breaker tripped) / running -- never two truths at once. Paused always wins
- * (the manual override); halted covers daily/weekly/consecutive-loss limits,
- * any of which still let existing positions keep being managed for exit,
- * they just block new entries.
+ * A single, unambiguous run state -- disabled (process-level kill switch) /
+ * paused (manual, DB-backed) / halted (a circuit breaker tripped) / running
+ * -- never two truths at once. Disabled always wins: when
+ * MAIN_STRATEGY_ENABLED=false, the poll loop was never even started (see
+ * index.ts), so paused/halted are meaningless -- there's no loop running to
+ * check them. Otherwise paused wins over halted (the manual override);
+ * halted covers daily/weekly/consecutive-loss limits, any of which still
+ * let existing positions keep being managed for exit, they just block new
+ * entries.
  */
 function computeRunState(mode: "paper" | "live", risk: RiskConfig, bankrollUsd: number) {
+  if (!env.MAIN_STRATEGY_ENABLED) return { state: "disabled" as const, reason: "MAIN_STRATEGY_ENABLED=false -- no poll loop running" };
   if (getBotState().paused) return { state: "paused" as const };
 
   const check = checkCircuitBreakers(mode, risk, bankrollUsd);

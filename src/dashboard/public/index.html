@@ -143,6 +143,7 @@
   .badge.paused { color: var(--text-muted); background: var(--surface-2); border-color: var(--border-strong); }
   .badge.halted { color: var(--warning); background: var(--warning-soft); }
   .badge.running { color: var(--good); background: var(--good-soft); }
+  .badge.disabled { color: var(--text-muted); background: var(--surface-2); border-color: var(--border-strong); }
 
   .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
 
@@ -755,13 +756,24 @@
     stateBadge.title = s.runState.reason || "";
 
     const btn = document.getElementById("toggleBtn");
-    btn.textContent = state === "paused" ? "Resume" : "Pause";
-    btn.onclick = async () => {
+    if (state === "disabled") {
+      // Process-level kill switch (MAIN_STRATEGY_ENABLED=false) -- no poll
+      // loop is running at all, so Pause/Resume have nothing to act on.
+      btn.textContent = "Disabled";
       btn.disabled = true;
-      await fetchJson(state === "paused" ? "/api/resume" : "/api/pause", { method: "POST" });
+      btn.title = "Set MAIN_STRATEGY_ENABLED=true (or unset it) to re-enable, then redeploy.";
+      btn.onclick = null;
+    } else {
+      btn.textContent = state === "paused" ? "Resume" : "Pause";
       btn.disabled = false;
-      refreshStatus();
-    };
+      btn.title = "";
+      btn.onclick = async () => {
+        btn.disabled = true;
+        await fetchJson(state === "paused" ? "/api/resume" : "/api/pause", { method: "POST" });
+        btn.disabled = false;
+        refreshStatus();
+      };
+    }
 
     const banner = document.getElementById("haltBanner");
     if (state === "halted") {

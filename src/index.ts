@@ -63,56 +63,69 @@ function logApiUsageEstimate(buckets: RefreshBucket[]): void {
 }
 
 async function main() {
-  const config = loadWatchlistConfig();
   getDb();
 
   console.log(`Vibes & Fibs`);
-  console.log(`  mode: ${env.liveTradingEnabled ? "LIVE" : "paper"}`);
   console.log(`  database: ${env.DATABASE_PATH}`);
 
-  if (config.watchlistSource.mode === "top_traded") {
+  if (!env.MAIN_STRATEGY_ENABLED) {
+    // Nothing below this branch runs -- no watchlist load, no poll loop
+    // ever started (see the startPollLoop call at the bottom of main()),
+    // so this makes zero Helius/price-provider calls and opens no new
+    // positions. Deliberately not the same thing as the DB-backed pause
+    // flag: that still requires the loop to be running and checking it
+    // every tick, and can be flipped back from the dashboard. This is off
+    // at the process level until MAIN_STRATEGY_ENABLED is unset/true again.
+    console.log(`  main strategy: DISABLED (MAIN_STRATEGY_ENABLED=false) -- no scanning, no poll loop, no new positions.`);
+    console.log(`  price provider: ${env.PRICE_PROVIDER} (unused while disabled)`);
+  } else {
+    const config = loadWatchlistConfig();
+    console.log(`  mode: ${env.liveTradingEnabled ? "LIVE" : "paper"}`);
+
+    if (config.watchlistSource.mode === "top_traded") {
+      console.log(
+        `  watchlist: top ${config.watchlistSource.topTradedCount} by 24h volume (refreshed every ${config.watchlistSource.refreshIntervalHours}h)` +
+          (config.tokens.length > 0 ? ` + ${config.tokens.length} pinned` : "") +
+          ` -- populated on first poll cycle`,
+      );
+      logApiUsageEstimate([
+        { count: config.watchlistSource.topTradedCount, technicalRefreshIntervalMinutes: config.defaultStrategy!.technicalRefreshIntervalMinutes },
+        ...config.tokens.map((t) => ({ count: 1, technicalRefreshIntervalMinutes: t.technicalRefreshIntervalMinutes })),
+      ]);
+    } else {
+      const enabledTokens = config.tokens.filter((t) => t.enabled);
+      console.log(`  watchlist: ${enabledTokens.length}/${config.tokens.length} tokens enabled (static)`);
+      for (const token of enabledTokens) {
+        console.log(`    - ${token.symbol} (${token.address})`);
+      }
+      logApiUsageEstimate(enabledTokens.map((t) => ({ count: 1, technicalRefreshIntervalMinutes: t.technicalRefreshIntervalMinutes })));
+    }
+
     console.log(
-      `  watchlist: top ${config.watchlistSource.topTradedCount} by 24h volume (refreshed every ${config.watchlistSource.refreshIntervalHours}h)` +
-        (config.tokens.length > 0 ? ` + ${config.tokens.length} pinned` : "") +
-        ` -- populated on first poll cycle`,
+      `  risk: ${config.risk.riskPctPerTrade}% (Tier A) / ${config.risk.riskPctPerTradeTierB}% (Tier B) per trade, ` +
+        `${config.risk.dailyLossLimitPct}% daily / ${config.risk.weeklyLossLimitPct}% weekly loss limit, ` +
+        `${config.risk.consecutiveLossLimit}-loss streak halt, max ${config.risk.maxConcurrentPositions} concurrent positions`,
     );
-    logApiUsageEstimate([
-      { count: config.watchlistSource.topTradedCount, technicalRefreshIntervalMinutes: config.defaultStrategy!.technicalRefreshIntervalMinutes },
-      ...config.tokens.map((t) => ({ count: 1, technicalRefreshIntervalMinutes: t.technicalRefreshIntervalMinutes })),
-    ]);
-  } else {
-    const enabledTokens = config.tokens.filter((t) => t.enabled);
-    console.log(`  watchlist: ${enabledTokens.length}/${config.tokens.length} tokens enabled (static)`);
-    for (const token of enabledTokens) {
-      console.log(`    - ${token.symbol} (${token.address})`);
+    console.log(`  price provider: ${env.PRICE_PROVIDER}`);
+    console.log(`  poll interval: ${env.POLL_INTERVAL_SECONDS}s`);
+
+    if (env.liveTradingEnabled) {
+      // getBotKeypair() throws if BOT_PRIVATE_KEY is missing/invalid -- fail
+      // fast and loudly rather than starting a live bot with no signer.
+      const keypair = getBotKeypair();
+      const connection = getConnection();
+      const lamports = await connection.getBalance(keypair.publicKey);
+      const solBalance = lamports / LAMPORTS_PER_SOL;
+
+      console.log(`\n*** LIVE TRADING ENABLED -- real transactions will be signed and sent ***`);
+      console.log(`  bot wallet: ${keypair.publicKey.toBase58()}`);
+      console.log(`  balance: ${solBalance.toFixed(4)} SOL`);
+      if (solBalance === 0) {
+        console.warn(`  wallet has zero balance -- fund it from Phantom before the bot can open any positions.`);
+      }
+    } else {
+      console.log(`  paper starting balance: $${env.PAPER_STARTING_BALANCE_USD}`);
     }
-    logApiUsageEstimate(enabledTokens.map((t) => ({ count: 1, technicalRefreshIntervalMinutes: t.technicalRefreshIntervalMinutes })));
-  }
-
-  console.log(
-    `  risk: ${config.risk.riskPctPerTrade}% (Tier A) / ${config.risk.riskPctPerTradeTierB}% (Tier B) per trade, ` +
-      `${config.risk.dailyLossLimitPct}% daily / ${config.risk.weeklyLossLimitPct}% weekly loss limit, ` +
-      `${config.risk.consecutiveLossLimit}-loss streak halt, max ${config.risk.maxConcurrentPositions} concurrent positions`,
-  );
-  console.log(`  price provider: ${env.PRICE_PROVIDER}`);
-  console.log(`  poll interval: ${env.POLL_INTERVAL_SECONDS}s`);
-
-  if (env.liveTradingEnabled) {
-    // getBotKeypair() throws if BOT_PRIVATE_KEY is missing/invalid -- fail
-    // fast and loudly rather than starting a live bot with no signer.
-    const keypair = getBotKeypair();
-    const connection = getConnection();
-    const lamports = await connection.getBalance(keypair.publicKey);
-    const solBalance = lamports / LAMPORTS_PER_SOL;
-
-    console.log(`\n*** LIVE TRADING ENABLED -- real transactions will be signed and sent ***`);
-    console.log(`  bot wallet: ${keypair.publicKey.toBase58()}`);
-    console.log(`  balance: ${solBalance.toFixed(4)} SOL`);
-    if (solBalance === 0) {
-      console.warn(`  wallet has zero balance -- fund it from Phantom before the bot can open any positions.`);
-    }
-  } else {
-    console.log(`  paper starting balance: $${env.PAPER_STARTING_BALANCE_USD}`);
   }
 
   const tailConfig = loadTailConfig();
@@ -135,7 +148,7 @@ async function main() {
   console.log("");
 
   startDashboardServer();
-  startPollLoop(env.POLL_INTERVAL_SECONDS);
+  if (env.MAIN_STRATEGY_ENABLED) startPollLoop(env.POLL_INTERVAL_SECONDS);
 }
 
 main().catch((err) => {
