@@ -6,6 +6,10 @@ import type { MainWalletTrade } from "./types.js";
 const MAX_PAGES = 20;
 const PAGE_SIZE = 100;
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Auto-detects the main wallet's recent buys (and, where visible in the same
  * scan, a matching later sell) by paging backward through its transaction
@@ -25,6 +29,7 @@ export async function fetchMainWalletTrades(mainWallet: string, maxTokens: numbe
 
   let before: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
+    if (page > 0) await sleep(1200); // paced -- see fetchPreBuyWindow.ts's comment on why this matters
     const txs = await getRecentTransactions(mainWallet, { limit: PAGE_SIZE, before });
     if (txs.length === 0) break;
 

@@ -2,6 +2,10 @@ import { getRecentTransactions } from "../data/helius.js";
 import { parseSwapForWallet } from "../tail/parseSwap.js";
 import type { EarlyBuyer } from "./types.js";
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // Bounded, but generously so -- unlike other paginated loops in this
 // codebase, this one may need to page through a lot of MORE RECENT activity
 // just to reach a historical cutoff (Helius's API only supports
@@ -40,6 +44,12 @@ export async function fetchPreBuyWindow(
   let truncated = false;
 
   for (; page < MAX_PAGES; page++) {
+    // Paced, not hammered -- this loop can issue up to MAX_PAGES requests
+    // back to back with nothing else pacing it, which is exactly what
+    // tripped a 429 (and, before the retry/backoff fix in data/helius.ts,
+    // aborted the whole run) on a busy token during real testing.
+    if (page > 0) await sleep(1200);
+
     const txs = await getRecentTransactions(tokenAddress, { limit: PAGE_SIZE, before });
     if (txs.length === 0) break;
 

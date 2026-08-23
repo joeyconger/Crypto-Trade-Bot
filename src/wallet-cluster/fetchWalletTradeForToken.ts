@@ -4,6 +4,10 @@ import { parseSwapForWallet } from "../tail/parseSwap.js";
 const MAX_PAGES = 20;
 const PAGE_SIZE = 100;
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export interface WalletTokenTrade {
   buyAt: string | null;
   sellAt: string | null; // earliest sell strictly after buyAt, if any
@@ -23,6 +27,7 @@ export async function fetchWalletTradeForToken(wallet: string, tokenAddress: str
 
   let before: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
+    if (page > 0) await sleep(1200); // paced -- see fetchPreBuyWindow.ts's comment on why this matters
     const txs = await getRecentTransactions(wallet, { limit: PAGE_SIZE, before });
     if (txs.length === 0) break;
 

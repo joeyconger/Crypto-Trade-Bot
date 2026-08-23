@@ -109,13 +109,25 @@ export async function runWalletClusterPipeline(options: RunWalletClusterPipeline
 
   // ---- Step 2+3: pre-buy-window early buyers per token, aggregated by candidate wallet ----
   const overlapsByCandidate = new Map<string, TokenOverlap[]>();
+  const skippedTokens: string[] = [];
   for (const trade of tokensAnalyzed) {
     log(`Scanning early buyers of ${trade.tokenSymbol} in the ${config.preBuyWindowMinutes}min before the main wallet's buy...`);
-    const { earlyBuyers, truncated, pagesScanned } = await fetchPreBuyWindow(
-      trade.tokenAddress,
-      trade.buyAt,
-      config.preBuyWindowMinutes,
-    );
+    // A persistently rate-limited or otherwise failing token (even after
+    // getRecentTransactions's own retry/backoff is exhausted) should reduce
+    // the sample by one token, not abort the whole multi-token run -- found
+    // via a real crash during testing where an unhandled error here killed
+    // results for every OTHER token that had already scanned successfully.
+    let scanResult;
+    try {
+      scanResult = await fetchPreBuyWindow(trade.tokenAddress, trade.buyAt, config.preBuyWindowMinutes);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log(`  WARNING: ${trade.tokenSymbol}'s early-buyer scan failed and was skipped: ${message}`);
+      skippedTokens.push(trade.tokenSymbol);
+      continue;
+    }
+
+    const { earlyBuyers, truncated, pagesScanned } = scanResult;
     if (truncated) {
       log(
         `  NOTE: ${trade.tokenSymbol}'s early-buyer scan hit its page cap (${pagesScanned} pages) before fully covering the window -- coverage for this token may be incomplete.`,
@@ -218,14 +230,23 @@ export async function runWalletClusterPipeline(options: RunWalletClusterPipeline
 
   candidates.sort((a, b) => b.confidenceScore - a.confidenceScore);
 
+  const skippedNote =
+    skippedTokens.length > 0
+      ? `${skippedTokens.length} token(s) could not be scanned and were excluded from overlap counting: ${skippedTokens.join(", ")}.`
+      : undefined;
+
   const result: WalletClusterRunResult = {
     mainWallet,
     runAt: new Date().toISOString(),
     preBuyWindowMinutes: config.preBuyWindowMinutes,
     minOverlapCount: config.minOverlapCount,
     tokensAnalyzed,
-    sampleTooThin: tooThin,
-    sampleNote: note,
+    // Only let skipped tokens flip this flag if the REMAINING successfully-
+    // scanned count itself falls below the meaningful-sample threshold --
+    // one incidental failure out of 15 tokens doesn't invalidate the other
+    // 14, but skips that eat into an already-small sample genuinely do.
+    sampleTooThin: tooThin || tokensAnalyzed.length - skippedTokens.length < MIN_SAMPLE_SIZE,
+    sampleNote: [note, skippedNote].filter(Boolean).join(" ") || undefined,
     candidates,
   };
 
