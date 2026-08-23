@@ -77,12 +77,21 @@ export async function getOhlcv(
 export async function getTokenOverview(address: string): Promise<TokenOverview> {
   const data = await birdeyeGet("/defi/token_overview", { address });
 
+  // Best-understanding Birdeye field names for market cap, unverified from
+  // this sandbox like the rest of this file -- `mc` per Birdeye's documented
+  // /defi/token_overview response, falling back to fully-diluted valuation
+  // if that's zero/missing (same reasoning as geckoterminal.ts).
+  const marketCapRaw = Number(data?.mc ?? 0);
+  const fdvRaw = Number(data?.fdv ?? data?.realMc ?? 0);
+  const marketCapUsd = marketCapRaw > 0 ? marketCapRaw : fdvRaw > 0 ? fdvRaw : undefined;
+
   return {
     price: Number(data?.price ?? 0),
     liquidityUsd: Number(data?.liquidity ?? 0),
     volume24hUsd: Number(data?.v24hUSD ?? data?.volume24h ?? 0),
     priceChange24hPct: Number(data?.priceChange24hPercent ?? 0),
     symbol: typeof data?.symbol === "string" && data.symbol.length > 0 ? data.symbol : undefined,
+    marketCapUsd,
   };
 }
 

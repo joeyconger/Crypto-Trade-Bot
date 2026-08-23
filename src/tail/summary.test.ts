@@ -20,6 +20,7 @@ function trade(overrides: Partial<TailTradeRow>): TailTradeRow {
     sim_entry_fill_at: "2026-01-01T00:00:06.000Z",
     sim_entry_fill_price_usd: 1.05,
     entry_liquidity_usd: 50000,
+    entry_market_cap_usd: 250000,
     entry_slippage_vs_wallet_pct: 5,
     wallet_exit_price_usd: 1.2,
     wallet_exit_tx_signature: "sig-exit",
@@ -29,6 +30,7 @@ function trade(overrides: Partial<TailTradeRow>): TailTradeRow {
     sim_exit_fill_at: "2026-01-01T01:00:06.000Z",
     sim_exit_fill_price_usd: 1.15,
     exit_liquidity_usd: 50000,
+    exit_market_cap_usd: 275000,
     exit_slippage_vs_wallet_pct: -4.1666,
     pnl_usd: 10, // (1.15 - 1.05) * 10
     pnl_pct: 10,

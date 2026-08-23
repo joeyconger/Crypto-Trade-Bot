@@ -4,7 +4,9 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export type FillLookup = { ok: true; priceUsd: number; liquidityUsd: number } | { ok: false; error: string };
+export type FillLookup =
+  | { ok: true; priceUsd: number; liquidityUsd: number; marketCapUsd: number | undefined }
+  | { ok: false; error: string };
 
 async function lookupPrice(tokenAddress: string): Promise<FillLookup> {
   try {
@@ -12,7 +14,7 @@ async function lookupPrice(tokenAddress: string): Promise<FillLookup> {
     if (!overview || !Number.isFinite(overview.price) || overview.price <= 0) {
       return { ok: false, error: "provider returned no usable price" };
     }
-    return { ok: true, priceUsd: overview.price, liquidityUsd: overview.liquidityUsd };
+    return { ok: true, priceUsd: overview.price, liquidityUsd: overview.liquidityUsd, marketCapUsd: overview.marketCapUsd };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -43,6 +45,6 @@ export async function simulateDelayedFill(tokenAddress: string, delaySeconds: nu
  * over that short a gap; noted here so it isn't mistaken for an exact figure.
  */
 export async function getQuoteUsdPrice(quoteMint: string, quoteIsStable: boolean): Promise<FillLookup> {
-  if (quoteIsStable) return { ok: true, priceUsd: 1, liquidityUsd: Infinity };
+  if (quoteIsStable) return { ok: true, priceUsd: 1, liquidityUsd: Infinity, marketCapUsd: undefined };
   return lookupPrice(quoteMint);
 }

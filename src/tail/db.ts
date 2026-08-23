@@ -7,11 +7,33 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let initialized = false;
 
-/** Applies tail_*'s own schema against the shared DB connection. Idempotent (CREATE TABLE IF NOT EXISTS), safe to call on every startup. */
+// CREATE TABLE IF NOT EXISTS (schema.sql) only handles a brand-new database
+// -- it's a no-op against a table that already exists on a persisted volume,
+// so a new column added here needs its own migration or it silently never
+// appears on an existing deploy. SQLite has no "ADD COLUMN IF NOT EXISTS,"
+// so this just attempts each addition and swallows the "duplicate column"
+// error when it's already there. Add new tail_trades columns to this list
+// alongside schema.sql, not instead of it (schema.sql is still what a fresh
+// database gets on first run).
+const TAIL_TRADES_MIGRATIONS: string[] = [
+  "ALTER TABLE tail_trades ADD COLUMN entry_market_cap_usd REAL",
+  "ALTER TABLE tail_trades ADD COLUMN exit_market_cap_usd REAL",
+];
+
+/** Applies tail_*'s own schema against the shared DB connection. Idempotent (CREATE TABLE IF NOT EXISTS + best-effort column migrations), safe to call on every startup. */
 export function initTailSchema(): void {
   if (initialized) return;
   const schema = fs.readFileSync(path.join(__dirname, "schema.sql"), "utf8");
-  getDb().exec(schema);
+  const db = getDb();
+  db.exec(schema);
+  for (const migration of TAIL_TRADES_MIGRATIONS) {
+    try {
+      db.exec(migration);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.includes("duplicate column")) throw err;
+    }
+  }
   initialized = true;
 }
 
@@ -42,6 +64,7 @@ export interface TailTradeRow {
   sim_entry_fill_at: string | null;
   sim_entry_fill_price_usd: number | null;
   entry_liquidity_usd: number | null;
+  entry_market_cap_usd: number | null;
   entry_slippage_vs_wallet_pct: number | null;
   wallet_exit_price_usd: number | null;
   wallet_exit_tx_signature: string | null;
@@ -51,6 +74,7 @@ export interface TailTradeRow {
   sim_exit_fill_at: string | null;
   sim_exit_fill_price_usd: number | null;
   exit_liquidity_usd: number | null;
+  exit_market_cap_usd: number | null;
   exit_slippage_vs_wallet_pct: number | null;
   pnl_usd: number | null;
   pnl_pct: number | null;
@@ -95,6 +119,7 @@ export interface EntryFillResult {
   simEntryFillAt: string;
   simEntryFillPriceUsd: number;
   entryLiquidityUsd: number;
+  entryMarketCapUsd: number | undefined;
   quantity: number;
 }
 
@@ -108,11 +133,12 @@ export function recordEntryFill(input: EntryFillResult): void {
       `UPDATE tail_trades SET
         status = 'open', quantity = @quantity,
         sim_entry_fill_at = @simEntryFillAt, sim_entry_fill_price_usd = @simEntryFillPriceUsd,
-        entry_liquidity_usd = @entryLiquidityUsd, entry_slippage_vs_wallet_pct = @entrySlippageVsWalletPct,
+        entry_liquidity_usd = @entryLiquidityUsd, entry_market_cap_usd = @entryMarketCapUsd,
+        entry_slippage_vs_wallet_pct = @entrySlippageVsWalletPct,
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id = @tradeId`,
     )
-    .run({ ...input, entrySlippageVsWalletPct });
+    .run({ ...input, entryMarketCapUsd: input.entryMarketCapUsd ?? null, entrySlippageVsWalletPct });
 }
 
 export function markEntryUnfillable(tradeId: number): void {
@@ -162,6 +188,7 @@ export interface ExitFillResult {
   simExitFillAt: string;
   simExitFillPriceUsd: number;
   exitLiquidityUsd: number;
+  exitMarketCapUsd: number | undefined;
 }
 
 /** Closes the trade fully: computes both the realistic simulated P&L and the "if filled at the wallet's exact price/time" comparison P&L, from the same quantity basis. */
@@ -181,13 +208,22 @@ export function recordExitFill(input: ExitFillResult): void {
       `UPDATE tail_trades SET
         status = 'closed',
         sim_exit_fill_at = @simExitFillAt, sim_exit_fill_price_usd = @simExitFillPriceUsd,
-        exit_liquidity_usd = @exitLiquidityUsd, exit_slippage_vs_wallet_pct = @exitSlippageVsWalletPct,
+        exit_liquidity_usd = @exitLiquidityUsd, exit_market_cap_usd = @exitMarketCapUsd,
+        exit_slippage_vs_wallet_pct = @exitSlippageVsWalletPct,
         pnl_usd = @pnlUsd, pnl_pct = @pnlPct,
         wallet_exact_pnl_usd = @walletExactPnlUsd, wallet_exact_pnl_pct = @walletExactPnlPct,
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id = @tradeId`,
     )
-    .run({ ...input, exitSlippageVsWalletPct, pnlUsd, pnlPct, walletExactPnlUsd, walletExactPnlPct });
+    .run({
+      ...input,
+      exitMarketCapUsd: input.exitMarketCapUsd ?? null,
+      exitSlippageVsWalletPct,
+      pnlUsd,
+      pnlPct,
+      walletExactPnlUsd,
+      walletExactPnlPct,
+    });
 }
 
 export function markExitUnfillable(tradeId: number): void {

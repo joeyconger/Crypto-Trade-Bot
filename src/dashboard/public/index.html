@@ -594,6 +594,7 @@
         <thead>
           <tr>
             <th>Token</th><th>Status</th><th>Size</th><th>Wallet entry</th><th>Sim entry</th><th>Entry slip</th>
+            <th>Entry MCap</th><th>MCap now/exit</th><th>MCap &Delta;</th>
             <th>Wallet exit</th><th>Sim exit</th><th>Exit slip</th><th>Detect latency</th>
             <th>Sim P&amp;L</th><th>Exact P&amp;L</th><th>Opened</th>
           </tr>
@@ -859,6 +860,15 @@
     return n < 1000 ? Math.round(n) + "ms" : (n / 1000).toFixed(1) + "s";
   }
 
+  function fmtMcap(n) {
+    if (n == null) return "&mdash;";
+    const abs = Math.abs(n);
+    if (abs >= 1e9) return "$" + (n / 1e9).toFixed(2) + "B";
+    if (abs >= 1e6) return "$" + (n / 1e6).toFixed(2) + "M";
+    if (abs >= 1e3) return "$" + (n / 1e3).toFixed(1) + "K";
+    return fmtUsd(n);
+  }
+
   let tailModuleAvailable = null; // null = unknown yet, true/false once checked
 
   async function refreshTail() {
@@ -898,7 +908,13 @@
       document.getElementById("tailKpiSlippage").innerHTML = summary.avgEntrySlippageVsWalletPct == null ? "&mdash;" : fmtPct(summary.avgEntrySlippageVsWalletPct);
 
       document.getElementById("tailTradesEmpty").style.display = trades.length ? "none" : "block";
-      document.getElementById("tailTradesBody").innerHTML = trades.map((t) => `
+      document.getElementById("tailTradesBody").innerHTML = trades.map((t) => {
+        // "now" for an open position (live), the exit-time figure once closed, null otherwise (unfillable).
+        const compareMcap = t.status === "open" ? t.currentMarketCapUsd : t.status === "closed" ? t.exit_market_cap_usd : null;
+        const mcapDeltaPct = (t.entry_market_cap_usd != null && compareMcap != null && t.entry_market_cap_usd > 0)
+          ? ((compareMcap - t.entry_market_cap_usd) / t.entry_market_cap_usd) * 100
+          : null;
+        return `
         <tr>
           <td class="sym"><a href="https://solscan.io/token/${encodeURIComponent(t.token_address)}" target="_blank" rel="noopener" title="${esc(t.token_address)}" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor">${esc(t.token_symbol)}</a></td>
           <td><span class="pill ${t.status === 'closed' ? 'yes' : t.status.startsWith('unfillable') ? 'no' : 'none'}">${t.status.replace('_', ' ')}</span></td>
@@ -906,6 +922,9 @@
           <td>${fmtPrice(t.wallet_entry_price_usd)}</td>
           <td>${fmtPrice(t.sim_entry_fill_price_usd)}</td>
           <td>${t.entry_slippage_vs_wallet_pct == null ? "&mdash;" : fmtPct(t.entry_slippage_vs_wallet_pct)}</td>
+          <td>${fmtMcap(t.entry_market_cap_usd)}</td>
+          <td>${fmtMcap(compareMcap)}</td>
+          <td>${mcapDeltaPct == null ? "&mdash;" : `<span class="${mcapDeltaPct >= 0 ? 'up' : 'down'}">${fmtPct(mcapDeltaPct)}</span>`}</td>
           <td>${fmtPrice(t.wallet_exit_price_usd)}</td>
           <td>${fmtPrice(t.sim_exit_fill_price_usd)}</td>
           <td>${t.exit_slippage_vs_wallet_pct == null ? "&mdash;" : fmtPct(t.exit_slippage_vs_wallet_pct)}</td>
@@ -914,7 +933,8 @@
           <td>${pnlSpan(t.wallet_exact_pnl_usd, t.wallet_exact_pnl_pct)}</td>
           <td>${fmtTime(t.created_at)}</td>
         </tr>
-      `).join("");
+      `;
+      }).join("");
     } catch (err) {
       // A 404 (route not mounted -- TAIL_ENABLED=false) is expected and not
       // an error worth logging; anything else is a real fetch failure.

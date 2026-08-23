@@ -10,31 +10,44 @@ import { getTokenOverview } from "../data/priceProvider.js";
 // worth trying to re-resolve now that a real lookup exists.
 const UNRESOLVED_SYMBOL_PATTERN = /^.{4}….{4}$/;
 
-/**
- * Self-heals rows recorded before symbol resolution existed: re-resolves and
- * persists a real ticker for any trade still showing the shortened-address
- * placeholder. Runs on every /trades read, but only does work for rows that
- * still need it -- once resolved, a row is never touched again. A failed
- * lookup just leaves the placeholder in place to retry next read, same
- * fail-open behavior as the original resolution attempt.
- */
-async function backfillUnresolvedSymbols(trades: TailTradeRow[]): Promise<void> {
-  const unresolved = trades.filter((t) => UNRESOLVED_SYMBOL_PATTERN.test(t.token_symbol));
-  if (unresolved.length === 0) return;
+export interface TailTradeRowWithLive extends TailTradeRow {
+  currentPriceUsd?: number;
+  currentMarketCapUsd?: number;
+}
 
+/**
+ * Adds live data on every /trades read: (1) self-heals rows recorded before
+ * symbol resolution existed, re-resolving and persisting a real ticker for
+ * any trade still showing the shortened-address placeholder, and (2) for
+ * still-OPEN positions, attaches a live current price/market cap so "what I
+ * got in at vs. what it is now" doesn't require a separate lookup. Both need
+ * a getTokenOverview call for the same token in the open+unresolved case, so
+ * they're combined into one call per token rather than two. A failed lookup
+ * just leaves the row as-is (placeholder symbol, no current-price fields) --
+ * retried on the next fetch, never blocks the response.
+ */
+async function enrichTradesWithLiveData(trades: TailTradeRow[]): Promise<TailTradeRowWithLive[]> {
+  const needsLookup = trades.filter((t) => t.status === "open" || UNRESOLVED_SYMBOL_PATTERN.test(t.token_symbol));
+
+  const enriched: TailTradeRowWithLive[] = trades;
   await Promise.all(
-    unresolved.map(async (t) => {
+    needsLookup.map(async (t) => {
       try {
         const overview = await getTokenOverview(t.token_address);
-        if (overview.symbol) {
+        if (UNRESOLVED_SYMBOL_PATTERN.test(t.token_symbol) && overview.symbol) {
           updateTailTradeSymbol(t.id, overview.symbol);
           t.token_symbol = overview.symbol;
         }
+        if (t.status === "open") {
+          (t as TailTradeRowWithLive).currentPriceUsd = overview.price;
+          (t as TailTradeRowWithLive).currentMarketCapUsd = overview.marketCapUsd;
+        }
       } catch {
-        // leave the placeholder -- retried on the next /trades fetch
+        // leave the row as-is -- retried on the next /trades fetch
       }
     }),
   );
+  return enriched;
 }
 
 /**
@@ -59,8 +72,7 @@ export function createTailDashboardRouter(config: TailConfig): Router {
   router.get("/trades", async (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 100, 1000);
     const trades = getAllTailTrades(undefined, limit);
-    await backfillUnresolvedSymbols(trades);
-    res.json(trades);
+    res.json(await enrichTradesWithLiveData(trades));
   });
 
   router.get("/summary", (req, res) => {

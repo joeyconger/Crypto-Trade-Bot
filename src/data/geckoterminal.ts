@@ -147,12 +147,22 @@ export async function getTokenOverview(address: string): Promise<TokenOverview> 
     if (best?.attributes?.address) setCachedPoolAddress(address, best.attributes.address);
   }
 
+  // market_cap_usd is often null/zero for meme/pump.fun-style tokens (no
+  // reported circulating-supply distinct from total supply) -- fdv_usd
+  // (price x total supply) is what GeckoTerminal's own UI shows for those,
+  // so prefer a real market cap when reported, otherwise fall back to FDV
+  // rather than showing nothing.
+  const marketCapRaw = Number(attrs?.market_cap_usd ?? 0);
+  const fdvRaw = Number(attrs?.fdv_usd ?? 0);
+  const marketCapUsd = marketCapRaw > 0 ? marketCapRaw : fdvRaw > 0 ? fdvRaw : undefined;
+
   return {
     price: Number(attrs?.price_usd ?? 0),
     liquidityUsd: Number(attrs?.total_reserve_in_usd ?? 0),
     volume24hUsd: Number(attrs?.volume_usd?.h24 ?? 0),
     priceChange24hPct: Number(attrs?.price_change_percentage?.h24 ?? 0),
     symbol: typeof attrs?.symbol === "string" && attrs.symbol.length > 0 ? attrs.symbol : undefined,
+    marketCapUsd,
   };
 }
 

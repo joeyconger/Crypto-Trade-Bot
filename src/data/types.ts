@@ -23,6 +23,12 @@ export interface TokenOverview {
   // callers that only care about price/liquidity (most of them) can ignore
   // it. Undefined if the provider's response didn't have a usable symbol.
   symbol?: string;
+  // Market cap in USD, when the provider has one to report. Many meme/
+  // pump.fun-style tokens don't have a distinct "circulating supply" concept
+  // (effectively all supply is circulating from launch), so this falls back
+  // to fully-diluted valuation (FDV) when a provider only has that --
+  // undefined if neither is available.
+  marketCapUsd?: number;
 }
 
 export interface TopTradedToken {

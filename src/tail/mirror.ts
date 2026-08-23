@@ -102,6 +102,7 @@ export async function handleParsedBuy(
     simEntryFillAt: new Date().toISOString(),
     simEntryFillPriceUsd: fill.priceUsd,
     entryLiquidityUsd: fill.liquidityUsd,
+    entryMarketCapUsd: fill.marketCapUsd,
     quantity: usdSize / fill.priceUsd,
   });
 }
@@ -165,5 +166,6 @@ export async function handleParsedSell(
     simExitFillAt: new Date().toISOString(),
     simExitFillPriceUsd: fill.priceUsd,
     exitLiquidityUsd: fill.liquidityUsd,
+    exitMarketCapUsd: fill.marketCapUsd,
   });
 }

@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS tail_trades (
   sim_entry_fill_at TEXT,
   sim_entry_fill_price_usd REAL, -- NULL when unfillable_entry
   entry_liquidity_usd REAL, -- pool depth at sim fill time -- NULL when unfillable
+  entry_market_cap_usd REAL, -- market cap (or FDV fallback) at sim fill time, from the same provider call -- NULL when unavailable or unfillable
   entry_slippage_vs_wallet_pct REAL, -- (sim_entry_fill - wallet_entry) / wallet_entry x 100
 
   -- Same fields, mirrored for the close (the wallet's sell).
@@ -57,6 +58,7 @@ CREATE TABLE IF NOT EXISTS tail_trades (
   sim_exit_fill_at TEXT,
   sim_exit_fill_price_usd REAL,
   exit_liquidity_usd REAL,
+  exit_market_cap_usd REAL,
   exit_slippage_vs_wallet_pct REAL,
 
   -- The realistic simulated result -- the actual thing this module exists to measure.
