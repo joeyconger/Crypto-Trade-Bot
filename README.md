@@ -616,6 +616,8 @@ npm run generate-keypair  # creates the bot's own Solana keypair (run yourself, 
 npm run tail-summary      # prints the wallet-tail module's summary stats --
                            # optionally `-- --days 7` to scope the window;
                            # see "Wallet tail" below
+npm run wallet-cluster -- --wallet <address>  # runs the side-wallet
+                           # correlation analysis -- see "Wallet clustering" below
 ```
 
 ## Wallet tail (research module)
@@ -690,6 +692,86 @@ silence. This can only see gaps on **this server's** side (crashes, restarts,
 handler errors); it has no way to know whether Helius attempted delivery
 during a gap and failed, since a delivery that never reached this server
 leaves no record here at all.
+
+## Wallet clustering (research module)
+
+`src/wallet-cluster/` is a standalone, manually-triggered analysis tool: it
+attempts to identify likely "side wallets" of a tracked trader by finding
+other wallets that consistently buy the same tokens shortly before that
+trader's public buys, across as many independent tokens as possible.
+
+**This is correlation-based inference, not proof of identity or ownership.**
+Every output is a confidence score -- "consistent with being a controlled
+wallet" -- never a definitive claim. Nothing in this module reads as
+"confirmed," "is the same person," or similar anywhere in its code, logs, or
+UI. It has **no execution path of any kind** -- it only reads chain data and
+writes analysis results to its own tables.
+
+### Running it
+
+```bash
+npm run wallet-cluster -- --wallet <address>
+# optional: --pre-buy-window 60 --min-overlap 4 --max-tokens 15
+```
+
+Pulls the wallet's last `--max-tokens` buys automatically (or fewer, if that's
+all it's traded), then for each one scans every other wallet that bought the
+same token in the `--pre-buy-window` minutes beforehand. Wallets appearing as
+early buyers across enough of those tokens (`--min-overlap`, default 4 --
+below that isn't statistically distinguishable from coincidental sniping)
+get ranked and scored.
+
+### What the score means
+
+**Overlap count is the dominant signal** -- how many of the input tokens a
+candidate shows up as an early buyer on. Everything else is secondary:
+
+- **Funding link** (direct transfer, or a shared one-hop counterparty --
+  reuses/extends `src/onchain/walletConnectivity.ts`'s existing
+  mutual-independence heuristic rather than reimplementing it) acts as a
+  **multiplier** on the overlap-based score, not a flat bonus.
+- **Sell-timing pattern** (does the candidate exit sooner than the main
+  wallet, per overlapping token -- reported per-token, never collapsed into
+  one number since hold times vary a lot token to token) and **fee-payer
+  overlap** are minor, capped corroborating bonuses -- neither can alone
+  push a low-overlap candidate into high confidence.
+
+See `src/wallet-cluster/scoring.ts` for the exact weighting and the reasoning
+behind it -- it's a documented judgment call, not a formula calibrated
+against any ground-truth labeled dataset (none exists for this).
+
+If a check (funding link, sell timing, fee payer) fails to complete for a
+candidate, that's reported explicitly as a data gap, never silently treated
+as "no."
+
+### Sample-size honesty
+
+A run flags itself `sampleTooThin` (and says so prominently in the CLI
+report and dashboard, not just in a buried field) when the wallet's trade
+history is too short (fewer than 5 tokens) or too clustered in time (all
+buys within 6 hours) to make "consistent overlap across independent tokens"
+a meaningful claim -- a bot sniping every launch in one busy hour looks
+identical to a wallet specifically tracking the main wallet otherwise.
+
+### Exclusion-list suggestions -- manual review only
+
+Candidates clearing both a higher overlap bar (`exclusionSuggestionMinOverlap`,
+default 6) AND a funding link get flagged `suggestedForExclusion` -- shown in
+the dashboard's wallet-clustering section with Approve/Reject buttons. **This
+never auto-populates anything in `config/watchlist.yaml` or any strategy
+config.** A false positive here would wrongly disqualify a legitimate
+independent wallet's real on-chain confluence signal -- exactly the failure
+mode the empty exclusion list was originally trying to avoid by staying
+empty. A human reviews and approves each addition; the review action just
+records a decision, it doesn't touch strategy config on its own.
+
+### Results
+
+Stored in `wallet_cluster_runs`/`wallet_cluster_candidates` (own tables,
+namespaced, no foreign keys into the main strategy's or wallet-tail's
+schema), tagged with the main wallet and run date so repeated runs over time
+are comparable. View them via the dashboard's "Wallet clustering" section
+(shows the latest run) or query the tables directly for history.
 
 ## Deployment (Railway)
 

@@ -605,6 +605,30 @@
     </div>
   </section>
 
+  <section class="panel research-panel" id="walletClusterSection" style="display:none">
+    <h2><span class="badge research"><span class="dot"></span>research &middot; correlation, not proof</span>&nbsp; Wallet clustering</h2>
+    <p class="research-note">
+      Attempts to identify likely "side wallets" of a tracked trader by finding other wallets that consistently
+      buy the same tokens shortly before that wallet's public buys. This is statistical correlation, not identity
+      verification &mdash; a high score means "consistent with being a controlled wallet," never "confirmed to be."
+      Run via <code>npm run wallet-cluster -- --wallet &lt;address&gt;</code>; results below are read-only.
+      No trades are placed by this module, ever.
+    </p>
+    <div id="walletClusterLatestRun"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Candidate wallet</th><th>Overlap</th><th>Tokens</th><th>Funding link</th>
+            <th>Sell timing</th><th>Fee-payer overlap</th><th>Confidence</th><th>Suggested?</th><th>Review</th>
+          </tr>
+        </thead>
+        <tbody id="walletClusterBody"></tbody>
+      </table>
+      <div class="empty" id="walletClusterEmpty" style="display:none">No analysis runs yet -- see the CLI command above</div>
+    </div>
+  </section>
+
   <footer>Refreshes every 15s &middot; paper trading only unless LIVE_TRADING is explicitly enabled</footer>
 </div>
 
@@ -944,9 +968,93 @@
     }
   }
 
+  function confidencePillClass(band) {
+    if (band === "high") return "no"; // red -- a high correlation score is the thing worth scrutinizing, not celebrating
+    if (band === "moderate") return "none";
+    return "yes";
+  }
+
+  async function reviewWalletClusterCandidate(candidateId, status) {
+    await fetchJson(`/api/wallet-cluster/candidates/${candidateId}/review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    refreshWalletCluster();
+  }
+
+  async function refreshWalletCluster() {
+    const section = document.getElementById("walletClusterSection");
+    try {
+      const runs = await fetchJson("/api/wallet-cluster/runs?limit=1");
+      if (runs.length === 0) {
+        section.style.display = "none";
+        return;
+      }
+      section.style.display = "block";
+      const latestRun = runs[0];
+
+      const tokens = JSON.parse(latestRun.tokens_analyzed_json || "[]");
+      const runNote = document.getElementById("walletClusterLatestRun");
+      runNote.innerHTML =
+        `<p class="research-note">Latest run: <strong>${esc(latestRun.main_wallet)}</strong> &middot; ` +
+        `${fmtTime(latestRun.run_at)} &middot; ${latestRun.token_count} token(s) sampled ` +
+        `(${tokens.map((t) => esc(t.tokenSymbol)).join(", ")}) &middot; window ${latestRun.pre_buy_window_minutes}min &middot; ` +
+        `min overlap ${latestRun.min_overlap_count}` +
+        (latestRun.sample_too_thin
+          ? `<br><span class="down"><strong>Sample too thin to be meaningful:</strong> ${esc(latestRun.sample_note || "")}</span>`
+          : "") +
+        `</p>`;
+
+      const { candidates } = await fetchJson(`/api/wallet-cluster/runs/${latestRun.id}/candidates`);
+      document.getElementById("walletClusterEmpty").style.display = candidates.length ? "none" : "block";
+      document.getElementById("walletClusterBody").innerHTML = candidates.map((c) => {
+        const overlapTokens = JSON.parse(c.overlap_tokens_json || "[]");
+        const sellTiming = JSON.parse(c.sell_timing_json || "[]");
+        const sellSummary = !c.sell_timing_checked
+          ? "unknown (check failed)"
+          : sellTiming.length === 0
+            ? "n/a"
+            : `${sellTiming.filter((s) => s.candidateSoldSooner).length}/${sellTiming.filter((s) => s.candidateSoldSooner != null).length} sooner`;
+        const fundingSummary = !c.funding_link_checked
+          ? "unknown (check failed)"
+          : c.funding_link_found
+            ? `yes (hop ${c.funding_link_hop_distance})`
+            : "no";
+        const feeSummary = !c.fee_payer_checked ? "unknown (check failed)" : c.fee_payer_overlap_found ? "yes" : "no";
+
+        const reviewCell =
+          c.review_status !== "pending"
+            ? `<span class="pill ${c.review_status === "approved" ? "yes" : "no"}">${c.review_status}</span>`
+            : c.suggested_for_exclusion
+              ? `<button onclick="reviewWalletClusterCandidate(${c.id}, 'approved')" style="margin-right:4px">Approve</button><button onclick="reviewWalletClusterCandidate(${c.id}, 'rejected')" class="danger">Reject</button>`
+              : `<span class="pill none">n/a</span>`;
+
+        return `
+        <tr>
+          <td title="${esc(c.candidate_wallet)}">${fmtWallet(c.candidate_wallet)}</td>
+          <td>${c.overlap_count}</td>
+          <td class="reason">${overlapTokens.map((t) => esc(t.tokenSymbol)).join(", ")}</td>
+          <td>${esc(fundingSummary)}</td>
+          <td>${esc(sellSummary)}</td>
+          <td>${esc(feeSummary)}</td>
+          <td><span class="pill ${confidencePillClass(c.confidence_band)}">${c.confidence_score.toFixed(0)} (${c.confidence_band})</span></td>
+          <td>${c.suggested_for_exclusion ? "yes" : "no"}</td>
+          <td>${reviewCell}</td>
+        </tr>
+      `;
+      }).join("");
+    } catch (err) {
+      if (walletClusterAvailable !== false) console.error("wallet-cluster refresh failed", err);
+      walletClusterAvailable = false;
+      section.style.display = "none";
+    }
+  }
+  let walletClusterAvailable = null;
+
   async function refreshAll() {
     try {
-      await Promise.all([refreshStatus(), refreshPositions(), refreshTrades(), refreshSignals(), refreshTail()]);
+      await Promise.all([refreshStatus(), refreshPositions(), refreshTrades(), refreshSignals(), refreshTail(), refreshWalletCluster()]);
     } catch (err) {
       console.error("dashboard refresh failed", err);
     }

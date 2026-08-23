@@ -1,6 +1,6 @@
 import type { ParsedSwap } from "./parseSwap.js";
 import type { TailConfig } from "./config.js";
-import { getTokenOverview } from "../data/priceProvider.js";
+import { resolveTokenSymbol } from "../data/resolveTokenSymbol.js";
 import { simulateDelayedFill, getQuoteUsdPrice } from "./simulateFill.js";
 import {
   insertPendingTailEntry,
@@ -21,23 +21,6 @@ import {
  * request open for the entire delay, risking the provider treating it as a
  * failed delivery and retrying. See src/tail/webhook.ts.
  */
-
-async function tokenSymbolFor(tokenAddress: string): Promise<string> {
-  // Best-effort real ticker via the same getTokenOverview call already used
-  // for pricing elsewhere -- this is a SEPARATE network call from the
-  // simulated-fill lookup (that one runs after the delay, this one runs
-  // immediately), but at this module's trade volume that's a negligible
-  // cost against a much more useful dashboard/table label. Falls back to a
-  // shortened address if the provider errors or has no symbol for this
-  // token (never blocks opening the trade over a missing display label).
-  try {
-    const overview = await getTokenOverview(tokenAddress);
-    if (overview.symbol) return overview.symbol;
-  } catch {
-    // fall through
-  }
-  return `${tokenAddress.slice(0, 4)}…${tokenAddress.slice(-4)}`;
-}
 
 export async function handleParsedBuy(
   swap: ParsedSwap,
@@ -74,7 +57,7 @@ export async function handleParsedBuy(
   const tradeId = insertPendingTailEntry({
     walletAddress,
     tokenAddress: swap.tokenAddress,
-    tokenSymbol: await tokenSymbolFor(swap.tokenAddress),
+    tokenSymbol: await resolveTokenSymbol(swap.tokenAddress),
     usdSize,
     walletEntryPriceUsd,
     walletEntryTxSignature: swap.txSignature,

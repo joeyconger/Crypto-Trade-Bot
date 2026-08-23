@@ -25,6 +25,8 @@ import type { RiskConfig } from "../types/index.js";
 import { loadTailConfig } from "../tail/config.js";
 import { createTailWebhookRouter } from "../tail/webhook.js";
 import { createTailDashboardRouter } from "../tail/dashboardRoutes.js";
+import { initWalletClusterSchema } from "../wallet-cluster/db.js";
+import { createWalletClusterDashboardRouter } from "../wallet-cluster/dashboardRoutes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -81,6 +83,13 @@ export function createDashboardServer() {
     app.use("/api/tail", createTailWebhookRouter(tailConfig));
     app.use("/api/tail", createTailDashboardRouter(tailConfig));
   }
+
+  // Wallet-clustering / side-wallet detection -- a standalone, manually-run
+  // analysis tool (see src/wallet-cluster/). Read-only against its own
+  // tables except one write path (a human approving/rejecting a suggested
+  // exclusion-list candidate) -- no execution, no strategy config changes.
+  initWalletClusterSchema();
+  app.use("/api/wallet-cluster", createWalletClusterDashboardRouter());
 
   app.get("/api/status", async (_req, res) => {
     const config = loadWatchlistConfig();
