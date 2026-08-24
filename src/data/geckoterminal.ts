@@ -3,25 +3,32 @@ import { getCachedPoolAddress, setCachedPoolAddress } from "../db/index.js";
 import type { OhlcvCandle, TokenOverview, TopTradedToken } from "./types.js";
 
 /**
- * GeckoTerminal's public API -- no API key/signup required to use it at all,
- * unlike Birdeye. Used as the fallback price/OHLCV provider when Birdeye's
- * quota is exhausted (see PRICE_PROVIDER in config/env.ts). Field shapes
- * below are my best understanding of GeckoTerminal's documented v2 API and
- * are UNVERIFIED from this sandbox (no live network access) -- check the raw
- * error message on the first live run before assuming the strategy logic is
- * at fault, same caveat as every Birdeye endpoint in data/birdeye.ts.
+ * GeckoTerminal's on-chain DEX data, accessed through CoinGecko's keyed
+ * "onchain" API host -- NOT api.geckoterminal.com/api/v2, which is a
+ * separate legacy public host. That distinction matters and was gotten
+ * wrong in an earlier version of this file: api.geckoterminal.com/api/v2
+ * explicitly IGNORES x-cg-demo-api-key/x-cg-pro-api-key (GeckoTerminal's own
+ * FAQ says so directly) and stays capped at a flat 30 req/min shared with
+ * every anonymous caller worldwide REGARDLESS of whether a key is set --
+ * confirmed live as the cause of a long stretch of spurious 429s even after
+ * GECKOTERMINAL_API_KEY was correctly configured. api.coingecko.com/api/v3/
+ * onchain/... is the actual keyed host: same data, same endpoint paths
+ * (/networks/{network}/tokens/{address}, /pools, /ohlcv/{timeframe}, etc.),
+ * same JSON:API response shape (data.attributes, included), just an
+ * allowance tied to the key instead of the public pool. Still UNVERIFIED
+ * from this sandbox in the sense that no live network access here can
+ * confirm a real 200 response -- check the raw error on the first live call
+ * after this change before assuming anything downstream is wrong.
  *
- * Fully anonymous requests (no key) share a rate-limit pool with every other
- * unauthenticated caller hitting GeckoTerminal worldwide, not just this bot
- * -- in practice that's noticeably worse than "30 req/min for us." Setting
- * GECKOTERMINAL_API_KEY to a free CoinGecko "Demo" key (not a paid plan --
- * no cost, no credit card, just a signup at coingecko.com/en/api/pricing)
- * gets a dedicated per-key allowance instead, sent via the x-cg-demo-api-key
- * header per CoinGecko's public docs. Strongly recommended; the bot works
- * without one, just more prone to 429s under load.
+ * Without a key, requests here still work (public/anonymous), just subject
+ * to whatever CoinGecko's own anonymous rate limit is on this host -- not
+ * necessarily the same 30/min as the old geckoterminal.com host. Setting
+ * GECKOTERMINAL_API_KEY (a free CoinGecko "Demo" key, no cost, no card --
+ * coingecko.com/en/api/pricing) is what actually gets a dedicated per-key
+ * allowance here, unlike on the old host.
  */
 
-const BASE_URL = "https://api.geckoterminal.com/api/v2";
+const BASE_URL = "https://api.coingecko.com/api/v3/onchain";
 const NETWORK = "solana";
 
 function sleep(ms: number): Promise<void> {
