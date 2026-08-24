@@ -18,6 +18,7 @@ let initialized = false;
 const TAIL_TRADES_MIGRATIONS: string[] = [
   "ALTER TABLE tail_trades ADD COLUMN entry_market_cap_usd REAL",
   "ALTER TABLE tail_trades ADD COLUMN exit_market_cap_usd REAL",
+  "ALTER TABLE tail_trades ADD COLUMN closed_manually INTEGER NOT NULL DEFAULT 0",
 ];
 
 /** Applies tail_*'s own schema against the shared DB connection. Idempotent (CREATE TABLE IF NOT EXISTS + best-effort column migrations), safe to call on every startup. */
@@ -118,6 +119,7 @@ export interface TailTradeRow {
   pnl_pct: number | null;
   wallet_exact_pnl_usd: number | null;
   wallet_exact_pnl_pct: number | null;
+  closed_manually: 0 | 1;
   created_at: string;
   updated_at: string;
 }
@@ -262,6 +264,43 @@ export function recordExitFill(input: ExitFillResult): void {
       walletExactPnlUsd,
       walletExactPnlPct,
     });
+}
+
+export interface ManualCloseResult {
+  tradeId: number;
+  exitPriceUsd: number;
+  exitLiquidityUsd: number | null;
+  exitMarketCapUsd: number | null;
+}
+
+/**
+ * Closes an open position from the dashboard's manual Sell button, at a
+ * live price looked up on click -- for exits this bot has no other way to
+ * detect (e.g. standing in for scraping pump.fun "callouts"). Unlike
+ * recordExitFill, there's no wallet sell event backing this: only
+ * pnl_usd / pnl_pct (this app's own simulated result) get computed; the
+ * wallet_exit_ and wallet_exact_pnl_ columns are left NULL since there's
+ * nothing to compare against. closed_manually = 1 marks the row so the
+ * dashboard and any P&L analysis can tell these apart from wallet-mirrored
+ * exits.
+ */
+export function closeTailTradeManually(input: ManualCloseResult): void {
+  const trade = getTailTradeById(input.tradeId)!;
+  const quantity = trade.quantity!;
+  const pnlUsd = (input.exitPriceUsd - trade.sim_entry_fill_price_usd!) * quantity;
+  const pnlPct = (pnlUsd / trade.usd_size) * 100;
+
+  getDb()
+    .prepare(
+      `UPDATE tail_trades SET
+        status = 'closed', closed_manually = 1,
+        sim_exit_fill_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), sim_exit_fill_price_usd = @exitPriceUsd,
+        exit_liquidity_usd = @exitLiquidityUsd, exit_market_cap_usd = @exitMarketCapUsd,
+        pnl_usd = @pnlUsd, pnl_pct = @pnlPct,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = @tradeId`,
+    )
+    .run({ ...input, pnlUsd, pnlPct });
 }
 
 export function markExitUnfillable(tradeId: number): void {

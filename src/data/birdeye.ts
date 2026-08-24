@@ -16,7 +16,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Retries with backoff on 429 -- the free tier's rate limit is easy to hit with multiple watchlist tokens in one poll cycle. */
+/** Retries with backoff on 429 -- the free tier's rate limit is easy to hit under bursty lookup patterns. */
 async function birdeyeGet(path: string, params: Record<string, string>, retries = 2): Promise<any> {
   const url = new URL(`${BASE_URL}${path}`);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);

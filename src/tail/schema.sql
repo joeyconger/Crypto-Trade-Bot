@@ -70,6 +70,14 @@ CREATE TABLE IF NOT EXISTS tail_trades (
   wallet_exact_pnl_usd REAL,
   wallet_exact_pnl_pct REAL,
 
+  -- 1 when this position was closed via the dashboard's manual Sell button
+  -- (see dashboardRoutes.ts's POST /trades/:id/sell) instead of by detecting
+  -- the tailed wallet's own sell -- e.g. as a substitute for scraping
+  -- pump.fun "callouts" for an exit signal. wallet_exit_*/wallet_exact_pnl_*
+  -- stay NULL on these rows: there was no wallet sell event to compare
+  -- against, only pnl_usd/pnl_pct (this app's own simulated result) apply.
+  closed_manually INTEGER NOT NULL DEFAULT 0,
+
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

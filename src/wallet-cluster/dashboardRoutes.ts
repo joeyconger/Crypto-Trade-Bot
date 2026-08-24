@@ -39,8 +39,8 @@ export function createWalletClusterDashboardRouter(): Router {
   });
 
   // The only write path in this module -- a human reviewing one suggested
-  // candidate. Never auto-applies anything to config/watchlist.yaml or any
-  // strategy file; approving here just records the review decision.
+  // candidate. Never auto-applies anywhere; approving here just records the
+  // review decision.
   router.post("/candidates/:candidateId/review", express.json(), (req, res) => {
     const candidateId = Number(req.params.candidateId);
     const status = req.body?.status;

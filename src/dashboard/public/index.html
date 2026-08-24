@@ -459,94 +459,10 @@
       </span>
       <div>
         <h1>Vibes &amp; Fibs</h1>
-        <p>Solana on-chain trigger bot</p>
+        <p>Wallet-tail Solana trading bot</p>
       </div>
     </div>
-    <div class="top-right">
-      <span id="modeBadge" class="badge paper"><span class="dot"></span>paper</span>
-      <span id="stateBadge" class="badge running" title=""><span class="dot"></span>running</span>
-      <button id="toggleBtn">Pause</button>
-      <button id="toggleMainStrategyBtn" title="Show/hide the main strategy's KPIs, positions, trades, and signals -- doesn't pause or stop it, just hides it from view">Show main strategy</button>
-    </div>
   </header>
-
-  <div id="mainStrategySection">
-  <div id="haltBanner" class="halt-banner">
-    <span class="msg"><span id="haltIcon">&#9888;</span><span id="haltMessage"></span></span>
-    <button id="haltResumeBtn" class="danger">Resume</button>
-  </div>
-
-  <div class="kpi-grid">
-    <div class="card kpi">
-      <div class="label" id="kpiBalanceLabel">Paper balance</div>
-      <div class="value" id="kpiBalance">&mdash;</div>
-      <div class="sub" id="kpiBalanceSub">&nbsp;</div>
-    </div>
-    <div class="card kpi">
-      <div class="label">All-time P&amp;L</div>
-      <div class="value" id="kpiAllTime">&mdash;</div>
-      <div class="sub">realized, closed trades</div>
-    </div>
-    <div class="card kpi">
-      <div class="label">Today's P&amp;L</div>
-      <div class="value" id="kpiToday">&mdash;</div>
-      <div class="meter-track"><div class="fill" id="kpiTodayMeter" style="width:0%"></div></div>
-    </div>
-    <div class="card kpi">
-      <div class="label">Weekly P&amp;L</div>
-      <div class="value" id="kpiWeekly">&mdash;</div>
-      <div class="meter-track"><div class="fill" id="kpiWeeklyMeter" style="width:0%"></div></div>
-    </div>
-    <div class="card kpi">
-      <div class="label">Open positions</div>
-      <div class="value" id="kpiPositions">&mdash;</div>
-      <div class="sub" id="kpiPositionsSub">&nbsp;</div>
-    </div>
-    <div class="card kpi">
-      <div class="label">Watchlist</div>
-      <div class="value" id="kpiWatchlist">&mdash;</div>
-      <div class="sub" id="kpiWatchlistSub">&nbsp;</div>
-    </div>
-  </div>
-
-  <section class="panel">
-    <h2>Open positions <span class="count" id="positionsCount"></span></h2>
-    <div class="positions-grid" id="positionsGrid"></div>
-    <div class="empty" id="positionsEmpty" style="display:none">No open positions</div>
-  </section>
-
-  <section class="panel">
-    <h2>Trade history <span class="count" id="tradesCount"></span></h2>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Token</th><th>Tier</th><th>Avg entry</th><th>Avg exit</th><th>Size</th><th>P&amp;L</th>
-            <th>Tranches</th><th>Opened</th><th>Closed</th><th class="reason">Reason</th>
-          </tr>
-        </thead>
-        <tbody id="tradesBody"></tbody>
-      </table>
-      <div class="empty" id="tradesEmpty" style="display:none">No closed trades yet</div>
-    </div>
-  </section>
-
-  <section class="panel">
-    <h2>Signal history <span class="count" id="signalsCount"></span></h2>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Time</th><th>Token</th><th>Technical trigger</th><th>On-chain confluence</th>
-            <th>Action</th><th class="reason">Detail</th>
-          </tr>
-        </thead>
-        <tbody id="signalsBody"></tbody>
-      </table>
-      <div class="empty" id="signalsEmpty" style="display:none">No signal evaluations logged yet</div>
-    </div>
-  </section>
-  </div>
 
   <section class="panel research-panel" id="tailSection" style="display:none">
     <h2><span class="badge research"><span class="dot"></span>research &middot; paper only</span>&nbsp; Wallet tail</h2>
@@ -615,7 +531,7 @@
             <th>Wallet</th><th>Token</th><th>Status</th><th>Size</th><th>Wallet entry</th><th>Sim entry</th><th>Entry slip</th>
             <th>Entry MCap</th><th>MCap now/exit</th><th>MCap &Delta;</th>
             <th>Wallet exit</th><th>Sim exit</th><th>Exit slip</th><th>Detect latency</th>
-            <th>Sim P&amp;L</th><th>Exact P&amp;L</th><th>Opened</th>
+            <th>Sim P&amp;L</th><th>Exact P&amp;L</th><th>Opened</th><th></th>
           </tr>
         </thead>
         <tbody id="tailTradesBody"></tbody>
@@ -648,30 +564,10 @@
     </div>
   </section>
 
-  <footer>Refreshes every 15s &middot; paper trading only unless LIVE_TRADING is explicitly enabled</footer>
+  <footer>Refreshes every 15s</footer>
 </div>
 
 <script>
-  // Purely a display preference, per-browser (localStorage) -- doesn't pause
-  // or stop the main strategy, just hides its section of the page. Defaults
-  // to hidden so a fresh browser/tab starts in the "tail-only" view too.
-  (function initMainStrategyToggle() {
-    const section = document.getElementById("mainStrategySection");
-    const btn = document.getElementById("toggleMainStrategyBtn");
-    const apply = (hidden) => {
-      section.style.display = hidden ? "none" : "";
-      btn.textContent = hidden ? "Show main strategy" : "Hide main strategy";
-    };
-    let hidden = localStorage.getItem("hideMainStrategy");
-    hidden = hidden === null ? true : hidden === "true";
-    apply(hidden);
-    btn.onclick = () => {
-      hidden = !hidden;
-      localStorage.setItem("hideMainStrategy", String(hidden));
-      apply(hidden);
-    };
-  })();
-
   const fmtUsd = (n) => n == null ? "&mdash;" : (n < 0 ? "-$" : "$") + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const fmtPct = (n) => n == null ? "&mdash;" : (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
   const fmtQty = (n) => n == null ? "&mdash;" : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -705,208 +601,10 @@
     return `<span class="${cls}">${fmtUsd(usd)}${pctStr}</span>`;
   }
 
-  function repClass(score) {
-    if (score > 0.2) return "rep-good";
-    if (score < -0.2) return "rep-bad";
-    return "rep-neutral";
-  }
-
-  function walletChips(wallets) {
-    if (!wallets || wallets.length === 0) return "";
-    return `<div class="wallet-chips">${wallets.map((w) =>
-      `<span class="wallet-chip">${fmtWallet(w.wallet_address)} &middot; <span class="${repClass(w.reputation_score)}">${w.reputation_score.toFixed(1)}</span></span>`
-    ).join("")}</div>`;
-  }
-
-  function scaleProgress(p) {
-    const seg1 = p.scale_out_1_done ? "done" : "";
-    const seg2 = p.scale_out_2_done ? "done" : (p.scale_out_1_done ? "active" : "");
-    const seg3 = p.runner_active ? "active" : "";
-    return `
-      <div class="scale-track">
-        <div class="scale-seg ${seg1}"></div>
-        <div class="scale-seg ${seg2}"></div>
-        <div class="scale-seg ${seg3}"></div>
-      </div>
-      <div class="scale-labels">
-        <span>1.272${p.scale_out_1_done ? " ✓" : ""}</span>
-        <span>1.618${p.scale_out_2_done ? " ✓" : ""}</span>
-        <span>${p.runner_active ? "runner trailing" : "runner"}</span>
-      </div>
-    `;
-  }
-
   async function fetchJson(url, opts) {
     const res = await fetch(url, opts);
     if (!res.ok) throw new Error(url + " -> " + res.status);
     return res.json();
-  }
-
-  async function refreshStatus() {
-    const s = await fetchJson("/api/status");
-
-    const modeBadge = document.getElementById("modeBadge");
-    modeBadge.className = "badge " + (s.mode === "live" ? "live" : "paper");
-    modeBadge.innerHTML = `<span class="dot"></span>${s.mode}`;
-
-    const stateBadge = document.getElementById("stateBadge");
-    const state = s.runState.state;
-    stateBadge.className = "badge " + state;
-    stateBadge.innerHTML = `<span class="dot"></span>${state}`;
-    stateBadge.title = s.runState.reason || "";
-
-    const btn = document.getElementById("toggleBtn");
-    if (state === "disabled") {
-      // Process-level kill switch (MAIN_STRATEGY_ENABLED=false) -- no poll
-      // loop is running at all, so Pause/Resume have nothing to act on.
-      btn.textContent = "Disabled";
-      btn.disabled = true;
-      btn.title = "Set MAIN_STRATEGY_ENABLED=true (or unset it) to re-enable, then redeploy.";
-      btn.onclick = null;
-    } else {
-      btn.textContent = state === "paused" ? "Resume" : "Pause";
-      btn.disabled = false;
-      btn.title = "";
-      btn.onclick = async () => {
-        btn.disabled = true;
-        await fetchJson(state === "paused" ? "/api/resume" : "/api/pause", { method: "POST" });
-        btn.disabled = false;
-        refreshStatus();
-      };
-    }
-
-    const banner = document.getElementById("haltBanner");
-    if (state === "halted") {
-      banner.style.display = "flex";
-      document.getElementById("haltMessage").textContent = s.runState.reason || "Trading halted.";
-      const resumeBtn = document.getElementById("haltResumeBtn");
-      if (s.risk.weeklyHalted) {
-        resumeBtn.style.display = "inline-block";
-        resumeBtn.onclick = async () => { await fetchJson("/api/resume-weekly-halt", { method: "POST" }); refreshStatus(); };
-      } else if (s.risk.consecutiveLossHalted) {
-        resumeBtn.style.display = "inline-block";
-        resumeBtn.onclick = async () => { await fetchJson("/api/resume-consecutive-loss-halt", { method: "POST" }); refreshStatus(); };
-      } else {
-        resumeBtn.style.display = "none"; // daily halt clears itself at UTC midnight
-      }
-    } else {
-      banner.style.display = "none";
-    }
-
-    document.getElementById("kpiBalanceLabel").textContent = s.mode === "live" ? "Live wallet balance" : "Paper balance";
-    document.getElementById("kpiBalance").textContent = fmtUsd(s.equity.currentBalanceUsd).replace("&mdash;", "-");
-    document.getElementById("kpiBalanceSub").textContent = s.mode === "live" ? "bot's SOL, priced in USD" : "compounds with realized P&L";
-
-    const allTime = document.getElementById("kpiAllTime");
-    allTime.textContent = fmtUsd(s.equity.realizedPnlAllTimeUsd);
-    allTime.className = "value " + (s.equity.realizedPnlAllTimeUsd >= 0 ? "up" : "down");
-
-    const today = document.getElementById("kpiToday");
-    today.textContent = fmtUsd(s.risk.dailyPnlUsd);
-    today.className = "value " + (s.risk.dailyPnlUsd >= 0 ? "up" : "down");
-    const todayPct = Math.min(Math.abs(s.risk.dailyPnlUsd) / s.risk.dailyLimitUsd * 100, 100);
-    const todayFill = document.getElementById("kpiTodayMeter");
-    todayFill.style.width = todayPct + "%";
-    todayFill.className = "fill " + (s.risk.dailyPnlUsd < 0 && todayPct >= 100 ? "danger" : s.risk.dailyPnlUsd < 0 && todayPct > 60 ? "warn" : "");
-
-    const weekly = document.getElementById("kpiWeekly");
-    weekly.textContent = fmtUsd(s.risk.weeklyPnlUsd);
-    weekly.className = "value " + (s.risk.weeklyPnlUsd >= 0 ? "up" : "down");
-    const weeklyPct = Math.min(Math.abs(s.risk.weeklyPnlUsd) / s.risk.weeklyLimitUsd * 100, 100);
-    const weeklyFill = document.getElementById("kpiWeeklyMeter");
-    weeklyFill.style.width = weeklyPct + "%";
-    weeklyFill.className = "fill " + (s.risk.weeklyPnlUsd < 0 && weeklyPct >= 100 ? "danger" : s.risk.weeklyPnlUsd < 0 && weeklyPct > 60 ? "warn" : "");
-
-    document.getElementById("kpiPositions").textContent = s.openPositionsCount;
-    const maxPositions = s.risk.maxConcurrentPositions;
-    document.getElementById("kpiPositionsSub").textContent =
-      (maxPositions != null ? `${s.openPositionsCount}/${maxPositions} cap · ` : "") +
-      `${s.risk.consecutiveLosses}/${s.risk.consecutiveLossLimit} loss streak`;
-
-    const wl = s.watchlist || {};
-    document.getElementById("kpiWatchlist").textContent = wl.total != null ? wl.total : "—";
-    const wlSub = document.getElementById("kpiWatchlistSub");
-    if (wl.lastRefreshError) {
-      wlSub.textContent = "refresh failing: " + wl.lastRefreshError;
-      wlSub.className = "sub down";
-      wlSub.title = wl.lastRefreshError;
-    } else if (wl.lastRefreshedAt) {
-      wlSub.textContent = "updated " + timeAgo(wl.lastRefreshedAt);
-      wlSub.className = "sub";
-      wlSub.title = "";
-    } else {
-      wlSub.textContent = wl.lastRefreshedAt === undefined && wl.total != null ? "static list" : "pinned tokens only so far";
-      wlSub.className = "sub";
-      wlSub.title = "";
-    }
-  }
-
-  async function refreshPositions() {
-    const rows = await fetchJson("/api/positions");
-    document.getElementById("positionsCount").textContent = rows.length ? `(${rows.length})` : "";
-    document.getElementById("positionsEmpty").style.display = rows.length ? "none" : "block";
-    document.getElementById("positionsGrid").innerHTML = rows.map((p) => `
-      <div class="card position-card">
-        <div class="head">
-          <span class="sym">${esc(p.token_symbol)} ${p.confluence_tier ? `<span class="pill tier${p.confluence_tier}">Tier ${p.confluence_tier}</span>` : ""}</span>
-          ${pnlSpan(p.unrealizedPnlUsd, p.unrealizedPnlPct).replace('<span class="', '<span class="pnl ')}
-        </div>
-        <div class="price-row">entry ${fmtPrice(p.entry_price)} &rarr; now ${fmtPrice(p.currentPrice)} &middot; ${fmtQty(p.quantity_remaining)} / ${fmtQty(p.quantity)} left &middot; ${fmtUsd(p.usd_size)}</div>
-        ${scaleProgress(p)}
-        <div class="stat-grid">
-          <div><div class="stat-label">Stop</div><div class="stat-value">${fmtPrice(p.stop_price)}</div></div>
-          <div><div class="stat-label">Swing H/L</div><div class="stat-value">${fmtPrice(p.swing_high)} / ${fmtPrice(p.swing_low)}</div></div>
-          <div><div class="stat-label">ATR @ entry</div><div class="stat-value">${fmtPrice(p.atr_at_entry)}</div></div>
-        </div>
-        ${walletChips(p.wallets)}
-        <div class="reason">${esc(p.reason)}</div>
-      </div>
-    `).join("");
-  }
-
-  async function refreshTrades() {
-    const rows = await fetchJson("/api/trades?limit=50");
-    document.getElementById("tradesCount").textContent = rows.length ? `(${rows.length})` : "";
-    document.getElementById("tradesEmpty").style.display = rows.length ? "none" : "block";
-    document.getElementById("tradesBody").innerHTML = rows.map((t) => `
-      <tr>
-        <td class="sym">${esc(t.token_symbol)}</td>
-        <td>${t.confluence_tier ? `<span class="pill tier${t.confluence_tier}">Tier ${t.confluence_tier}</span>` : "—"}</td>
-        <td>${fmtPrice(t.entry_price)}</td>
-        <td>${fmtPrice(t.exit_price)}</td>
-        <td>${fmtUsd(t.usd_size)}</td>
-        <td>${pnlSpan(t.pnl_usd, t.pnl_pct)}</td>
-        <td>${(t.exits || []).map((e) => e.tranche.replace("_", " ")).join(", ") || "—"}</td>
-        <td>${fmtTime(t.opened_at)}</td>
-        <td>${fmtTime(t.closed_at)}</td>
-        <td class="reason">${esc(t.reason)}</td>
-      </tr>
-    `).join("");
-  }
-
-  async function refreshSignals() {
-    const rows = await fetchJson("/api/signals?limit=100");
-    document.getElementById("signalsCount").textContent = rows.length ? `(${rows.length})` : "";
-    document.getElementById("signalsEmpty").style.display = rows.length ? "none" : "block";
-    document.getElementById("signalsBody").innerHTML = rows.map((s) => {
-      let detail = "";
-      try {
-        const d = JSON.parse(s.detail || "{}");
-        const tierNote = d.tier ? `[Tier ${d.tier}] ` : "";
-        detail = tierNote + (d.skipReason || d.blockedBy || d.technicalReason || d.error ||
-          (d.confirmingWallets && d.confirmingWallets.length ? `wallets: ${d.confirmingWallets.map(fmtWallet).join(", ")}` : "") || "");
-      } catch {}
-      return `
-      <tr>
-        <td>${fmtTime(s.evaluated_at)}</td>
-        <td class="sym">${esc(s.token_symbol)}</td>
-        <td><span class="pill ${s.technical_trigger_passed ? "yes" : "no"}">${s.technical_trigger_passed ? "passed" : "failed"}</span></td>
-        <td><span class="pill ${s.onchain_confluence_present ? "yes" : "no"}">${s.onchain_confluence_present ? "present" : "none"}</span></td>
-        <td><span class="pill ${s.action_taken}">${s.action_taken}</span></td>
-        <td class="reason">${esc(detail)}</td>
-      </tr>
-    `;
-    }).join("");
   }
 
   function fmtMs(n) {
@@ -1013,7 +711,7 @@
         <tr>
           <td class="sym" title="${esc(t.wallet_address)}">${esc(labelFor(t.wallet_address))}</td>
           <td class="sym"><a href="https://solscan.io/token/${encodeURIComponent(t.token_address)}" target="_blank" rel="noopener" title="${esc(t.token_address)}" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor">${esc(t.token_symbol)}</a></td>
-          <td><span class="pill ${t.status === 'closed' ? 'yes' : t.status.startsWith('unfillable') ? 'no' : 'none'}">${t.status.replace('_', ' ')}</span></td>
+          <td><span class="pill ${t.status === 'closed' ? 'yes' : t.status.startsWith('unfillable') ? 'no' : 'none'}">${t.status.replace('_', ' ')}</span>${t.closed_manually ? ' <span class="pill none" title="Closed via the dashboard\'s Sell button, not a detected wallet sell">manual</span>' : ''}</td>
           <td>${fmtUsd(t.usd_size)}</td>
           <td>${fmtPrice(t.wallet_entry_price_usd)}</td>
           <td>${fmtPrice(t.sim_entry_fill_price_usd)}</td>
@@ -1028,6 +726,7 @@
           <td>${pnlSpan(t.pnl_usd, t.pnl_pct)}</td>
           <td>${pnlSpan(t.wallet_exact_pnl_usd, t.wallet_exact_pnl_pct)}</td>
           <td>${fmtTime(t.created_at)}</td>
+          <td>${t.status === 'open' ? `<button type="button" class="danger" style="padding:2px 10px" onclick="sellTailTrade(${t.id}, this)">Sell</button>` : ''}</td>
         </tr>
       `;
       }).join("");
@@ -1089,6 +788,27 @@
     } catch (err) {
       statusEl.textContent = "Failed to remove wallet: " + (err && err.message ? err.message : String(err));
       statusEl.style.color = "var(--critical)";
+    }
+  }
+
+  async function sellTailTrade(tradeId, btn) {
+    if (!confirm("Close this position now at the current market price?")) return;
+    btn.disabled = true;
+    btn.textContent = "Selling…";
+    try {
+      const res = await fetch(`/api/tail/trades/${tradeId}/sell`, { method: "POST" });
+      const body = await res.json();
+      if (!res.ok) {
+        alert(body.error || "Failed to sell.");
+        btn.disabled = false;
+        btn.textContent = "Sell";
+        return;
+      }
+      await refreshTail();
+    } catch (err) {
+      alert("Failed to sell: " + (err && err.message ? err.message : String(err)));
+      btn.disabled = false;
+      btn.textContent = "Sell";
     }
   }
 
@@ -1185,7 +905,7 @@
 
   async function refreshAll() {
     try {
-      await Promise.all([refreshStatus(), refreshPositions(), refreshTrades(), refreshSignals(), refreshTail(), refreshWalletCluster()]);
+      await Promise.all([refreshTail(), refreshWalletCluster()]);
     } catch (err) {
       console.error("dashboard refresh failed", err);
     }

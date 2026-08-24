@@ -8,10 +8,10 @@ const boolFromString = z
 
 const envSchema = z.object({
   SOLANA_RPC_URL: z.string().url().default("https://api.mainnet-beta.solana.com"),
+  // The bot's own dedicated wallet, generated via `npm run generate-keypair`
+  // -- never your personal Phantom wallet. Only needed when tail live
+  // trading is enabled (see TAIL_LIVE_TRADING below).
   BOT_PRIVATE_KEY: z.string().optional(),
-
-  LIVE_TRADING: boolFromString,
-  LIVE_TRADING_CONFIRM: boolFromString,
 
   HELIUS_API_KEY: z.string().optional(),
   BIRDEYE_API_KEY: z.string().optional(),
@@ -28,41 +28,12 @@ const envSchema = z.object({
   // unauthenticated caller. See data/geckoterminal.ts.
   GECKOTERMINAL_API_KEY: z.string().optional(),
 
-  TWITTER_BEARER_TOKEN: z.string().optional(),
-
   DATABASE_PATH: z.string().default("./data/bot.sqlite"),
-  WATCHLIST_CONFIG_PATH: z.string().default("./config/watchlist.yaml"),
 
   DASHBOARD_PORT: z.coerce.number().int().positive().default(4000),
 
-  // Hard kill switch for the main fib/RSI strategy -- default on (unset or
-  // anything but the literal string "false" keeps it running). Set to
-  // "false" to stop it completely: no poll loop is even started, so it
-  // makes zero Helius/price-provider calls and opens no new positions,
-  // rather than relying on the DB-backed pause flag (bot_state.paused,
-  // toggled from the dashboard's Pause/Resume button) which still requires
-  // the loop to be running to check it. The tail and wallet-cluster
-  // research modules are unaffected -- they're fully separate and keep
-  // running regardless of this flag.
-  MAIN_STRATEGY_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v?.toLowerCase() !== "false"),
-
-  // Virtual bankroll paper mode sizes positions against. Position sizing is a
-  // fixed % of this starting balance (not compounding equity) -- simple and
-  // predictable for v1.
-  PAPER_STARTING_BALANCE_USD: z.coerce.number().positive().default(1000),
-  // 60s (not 300s) so the dynamic-watchlist scan budget in engine/loop.ts
-  // can spread ~100 tokens' worth of scanning evenly across each
-  // technicalRefreshIntervalMinutes window instead of lumping it into a
-  // handful of large bursts. Ticks are cheap when nothing's due -- this
-  // doesn't cost extra API calls on its own.
-  POLL_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
-
-  // ---- Wallet-tail research module (src/tail/) -- fully separate from the
-  // main strategy above: own paper balance, own DB tables, paper-only, no
-  // live path. See src/tail/README.md.
+  // ---- Wallet-tail module (src/tail/) -- mirrors specific wallets' swaps,
+  // paper by default. See README's wallet-tail section.
   TAIL_ENABLED: boolFromString,
   // Comma-separated wallet addresses to mirror. Configurable, not hardcoded
   // -- defaults to the wallet this module was built to evaluate (omo /
@@ -74,14 +45,13 @@ const envSchema = z.object({
   // per-wallet breakdown. A missing/empty entry for a given index falls back
   // to a shortened address, same convention as resolveTokenSymbol.ts.
   TAIL_WALLET_LABELS: z.string().default(""),
-  // % of TAIL_STARTING_BALANCE_USD sized into each mirrored position -- this
-  // module's own fixed-fraction sizing, unrelated to the main strategy's
-  // riskPctPerTrade/riskPctPerTradeTierB.
+  // % of TAIL_STARTING_BALANCE_USD (paper) or the live wallet's real current
+  // balance (live) sized into each mirrored position.
   TAIL_POSITION_SIZE_PCT: z.coerce.number().positive().default(2),
   // Simulated route-building + tx submission + confirmation delay, in
   // seconds, applied between webhook detection and the paper fill lookup --
-  // this is the core of what the module is testing (edge lost to lag), not
-  // a knob to tune for better-looking results.
+  // paper mode only. Live trades execute as fast as possible instead --
+  // real execution latency, not an artificial one.
   TAIL_SIMULATED_DELAY_SECONDS: z.coerce.number().nonnegative().default(5),
   TAIL_STARTING_BALANCE_USD: z.coerce.number().positive().default(1000),
   // Shared secret expected on incoming webhook calls (the exact value you
@@ -96,11 +66,27 @@ const envSchema = z.object({
   // automatically. Without it, wallets added in the dashboard still get
   // tailed once you add them to the webhook yourself in Helius's dashboard.
   TAIL_HELIUS_WEBHOOK_ID: z.string().optional(),
+
+  // ---- Tail live trading -- REAL funds, REAL swaps, no per-trade approval
+  // step. Both flags below must be explicitly "true" (mirrors the old main
+  // strategy's two-flag live-trading safety pattern) and BOT_PRIVATE_KEY
+  // must be set, or tail stays paper-only regardless of these.
+  TAIL_LIVE_TRADING: boolFromString,
+  TAIL_LIVE_TRADING_CONFIRM: boolFromString,
+  // Jupiter swap slippage tolerance for live tail trades, in basis points
+  // (100 = 1%). Applies to both entries and exits (including the manual
+  // Sell button once a position is live).
+  TAIL_LIVE_SLIPPAGE_BPS: z.coerce.number().positive().default(100),
+  // If the live wallet's USD balance drops more than this % from its value
+  // at the start of the current UTC day, new live buys pause until the next
+  // UTC day -- existing open positions still sell normally when detected,
+  // this only blocks new entries. Not a per-trade stop-loss.
+  TAIL_LIVE_DAILY_LOSS_LIMIT_PCT: z.coerce.number().positive().default(20),
 });
 
 export type Env = z.infer<typeof envSchema> & {
-  /** True only when both LIVE_TRADING and LIVE_TRADING_CONFIRM are explicitly "true". */
-  liveTradingEnabled: boolean;
+  /** True only when both TAIL_LIVE_TRADING and TAIL_LIVE_TRADING_CONFIRM are explicitly "true" AND BOT_PRIVATE_KEY is set. */
+  tailLiveTradingEnabled: boolean;
 };
 
 function loadEnv(): Env {
@@ -115,10 +101,15 @@ function loadEnv(): Env {
 
   // Both flags must be explicitly set to enable live trading. Requiring two
   // separate env vars means a single accidental "true" can't flip the bot
-  // into placing real transactions.
-  const liveTradingEnabled = data.LIVE_TRADING === true && data.LIVE_TRADING_CONFIRM === true;
+  // into placing real transactions. BOT_PRIVATE_KEY is also required --
+  // fail fast and loudly here rather than starting "live" with no signer.
+  if (data.TAIL_LIVE_TRADING && data.TAIL_LIVE_TRADING_CONFIRM && !data.BOT_PRIVATE_KEY) {
+    console.error("TAIL_LIVE_TRADING is enabled but BOT_PRIVATE_KEY is not set -- refusing to start.");
+    process.exit(1);
+  }
+  const tailLiveTradingEnabled = data.TAIL_LIVE_TRADING === true && data.TAIL_LIVE_TRADING_CONFIRM === true;
 
-  return { ...data, liveTradingEnabled };
+  return { ...data, tailLiveTradingEnabled };
 }
 
 export const env = loadEnv();

@@ -18,6 +18,14 @@ export interface TailConfig {
   // dashboard -- see src/data/heliusWebhook.ts. Undefined means that sync is
   // skipped (you manage the webhook's address list manually in Helius).
   heliusWebhookId: string | undefined;
+  // True only when TAIL_LIVE_TRADING + TAIL_LIVE_TRADING_CONFIRM are both
+  // "true" and BOT_PRIVATE_KEY is set (enforced at env-load time -- see
+  // config/env.ts, which exits at startup if the flags are set without a
+  // key rather than silently falling back to paper). REAL funds, REAL swaps,
+  // no per-trade approval step, the instant a tailed wallet trades.
+  liveTradingEnabled: boolean;
+  liveSlippageBps: number;
+  liveDailyLossLimitPct: number;
 }
 
 export function loadTailConfig(): TailConfig {
@@ -49,5 +57,8 @@ export function loadTailConfig(): TailConfig {
     startingBalanceUsd: env.TAIL_STARTING_BALANCE_USD,
     webhookSecret: env.TAIL_WEBHOOK_SECRET,
     heliusWebhookId: env.TAIL_HELIUS_WEBHOOK_ID,
+    liveTradingEnabled: env.tailLiveTradingEnabled,
+    liveSlippageBps: env.TAIL_LIVE_SLIPPAGE_BPS,
+    liveDailyLossLimitPct: env.TAIL_LIVE_DAILY_LOSS_LIMIT_PCT,
   };
 }

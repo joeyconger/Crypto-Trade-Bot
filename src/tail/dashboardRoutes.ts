@@ -8,6 +8,8 @@ import {
   getTailWallets,
   upsertTailWallet,
   setTailWalletEnabled,
+  getTailTradeById,
+  closeTailTradeManually,
   type TailTradeRow,
 } from "./db.js";
 import { computeTailSummary } from "./summary.js";
@@ -156,6 +158,44 @@ export function createTailDashboardRouter(config: TailConfig): Router {
     const limit = Math.min(Number(req.query.limit) || 100, 1000);
     const trades = getAllTailTrades(undefined, limit);
     res.json(await enrichTradesWithLiveData(trades));
+  });
+
+  /**
+   * Manually closes an open tail_trade at a freshly-looked-up current
+   * price -- a substitute exit signal for cases with no reliable automated
+   * one (e.g. this app has no pump.fun "callout" scraper), so a position
+   * doesn't just sit open forever waiting for a wallet sell that may not be
+   * detectable. Marked closed_manually so it's distinguishable from a
+   * wallet-mirrored exit everywhere the dashboard/summary reads trades.
+   */
+  router.post("/trades/:id/sell", async (req, res) => {
+    const tradeId = Number(req.params.id);
+    const trade = getTailTradeById(tradeId);
+    if (!trade) {
+      res.status(404).json({ error: "trade not found" });
+      return;
+    }
+    if (trade.status !== "open") {
+      res.status(400).json({ error: `trade is already ${trade.status.replace("_", " ")}, nothing to sell` });
+      return;
+    }
+
+    try {
+      const overview = await getTokenOverview(trade.token_address);
+      if (!overview || !Number.isFinite(overview.price) || overview.price <= 0) {
+        res.status(502).json({ error: "no usable current price available right now -- try again in a moment" });
+        return;
+      }
+      closeTailTradeManually({
+        tradeId,
+        exitPriceUsd: overview.price,
+        exitLiquidityUsd: overview.liquidityUsd ?? null,
+        exitMarketCapUsd: overview.marketCapUsd ?? null,
+      });
+      res.json({ ok: true, exitPriceUsd: overview.price });
+    } catch (err) {
+      res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   router.get("/summary", (req, res) => {
