@@ -718,8 +718,12 @@
         modeBadge.innerHTML = `<span class="dot"></span>LIVE -- real funds`;
         modeNote.innerHTML =
           `Mirrors tailed wallets' on-chain swaps with <strong>real Jupiter swaps</strong>, sized off this wallet's ` +
-          `actual current balance. ${status.liveSlippageBps / 100}% slippage tolerance. A ${status.liveDailyLossLimitPct}% ` +
-          `daily loss cap pauses new buys (not existing exits) if the wallet drops that much since UTC midnight.`;
+          `actual current balance. ${status.liveSlippageBps / 100}% slippage tolerance. ` +
+          (status.liveDailyLossCapEnabled
+            ? `A ${status.liveDailyLossLimitPct}% daily loss cap pauses new buys (not existing exits) if the wallet ` +
+              `drops that much since UTC midnight.`
+            : `<strong style="color:#c0392b">Daily loss cap is currently DISABLED</strong> -- new buys will NOT pause ` +
+              `on drawdown, no matter how much the wallet loses in a day.`);
         liveBalanceNote.style.display = "";
         headerLiveBalance.style.display = "";
         try {

@@ -29,6 +29,8 @@ export function drawdownPct(snapshotBalanceUsd: number, currentBalanceUsd: numbe
  * sells, capped or not -- this only pauses new entries.
  */
 export async function checkDailyLossCapOk(): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (!env.TAIL_LIVE_DAILY_LOSS_CAP_ENABLED) return { ok: true };
+
   const currentBalanceUsd = await getBotWalletBalanceUsd();
   const today = todayUtcDateString();
   const snapshot = getTailLiveDailySnapshot();

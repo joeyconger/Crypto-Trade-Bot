@@ -99,6 +99,7 @@ export function createTailDashboardRouter(config: TailConfig): Router {
       liveTradingEnabled: config.liveTradingEnabled,
       liveSlippageBps: config.liveSlippageBps,
       liveDailyLossLimitPct: config.liveDailyLossLimitPct,
+      liveDailyLossCapEnabled: config.liveDailyLossCapEnabled,
     });
   });
 

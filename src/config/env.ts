@@ -82,6 +82,16 @@ const envSchema = z.object({
   // UTC day -- existing open positions still sell normally when detected,
   // this only blocks new entries. Not a per-trade stop-loss.
   TAIL_LIVE_DAILY_LOSS_LIMIT_PCT: z.coerce.number().positive().default(20),
+  // Runtime kill switch for the daily loss cap above -- defaults to enabled
+  // (unset or anything other than the literal string "false" leaves it on).
+  // Set to "false" to stop new live buys from pausing on drawdown; set back
+  // to "true" (or unset it) to re-arm. Deliberately a separate flag from
+  // TAIL_LIVE_DAILY_LOSS_LIMIT_PCT so "temporarily off" doesn't require
+  // remembering/restoring a numeric threshold.
+  TAIL_LIVE_DAILY_LOSS_CAP_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v?.toLowerCase() !== "false"),
 });
 
 export type Env = z.infer<typeof envSchema> & {

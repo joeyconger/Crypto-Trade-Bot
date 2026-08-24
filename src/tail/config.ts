@@ -26,6 +26,11 @@ export interface TailConfig {
   liveTradingEnabled: boolean;
   liveSlippageBps: number;
   liveDailyLossLimitPct: number;
+  // Runtime kill switch for the daily loss cap -- see env.ts's
+  // TAIL_LIVE_DAILY_LOSS_CAP_ENABLED. When false, checkDailyLossCapOk()
+  // always passes; existing open positions and everything else about live
+  // trading are unaffected.
+  liveDailyLossCapEnabled: boolean;
 }
 
 export function loadTailConfig(): TailConfig {
@@ -60,5 +65,6 @@ export function loadTailConfig(): TailConfig {
     liveTradingEnabled: env.tailLiveTradingEnabled,
     liveSlippageBps: env.TAIL_LIVE_SLIPPAGE_BPS,
     liveDailyLossLimitPct: env.TAIL_LIVE_DAILY_LOSS_LIMIT_PCT,
+    liveDailyLossCapEnabled: env.TAIL_LIVE_DAILY_LOSS_CAP_ENABLED,
   };
 }

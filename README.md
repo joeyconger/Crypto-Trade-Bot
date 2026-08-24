@@ -279,7 +279,10 @@ the current UTC day, new live buys pause automatically until the next UTC
 day. This only blocks *new* entries -- any position already open still sells
 normally the moment its tailed wallet sells. It's not a per-trade stop-loss,
 just a backstop against a bad day (or a bad tailed wallet) silently draining
-the whole balance unattended.
+the whole balance unattended. Can be temporarily disabled via
+`TAIL_LIVE_DAILY_LOSS_CAP_ENABLED=false` (defaults to enabled) without
+touching the threshold -- set it back to `true` (or remove the line) to
+re-arm it.
 
 **Manual Sell button**: closes an open position immediately at the current
 market price -- useful when there's no reliable automated exit signal (e.g.
