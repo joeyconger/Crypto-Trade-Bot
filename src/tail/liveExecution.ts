@@ -1,14 +1,17 @@
-import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { env } from "../config/env.js";
 import { getTokenOverview } from "../data/priceProvider.js";
 import { getTokenBalanceRaw } from "../solana/tokenAccounts.js";
 import { swapSolForToken, swapTokenForSol, SOL_MINT } from "../execution/jupiter.js";
-import { getBotSolBalance, getBotWalletBalanceUsd } from "../execution/liveTrading.js";
+import { getBotSolBalance, type BotWalletSnapshot } from "../execution/liveTrading.js";
 import { getTailLiveDailySnapshot, setTailLiveDailySnapshot } from "./db.js";
 
 // Reserved so a buy never leaves the wallet unable to afford its own tx fees
 // -- same figure the (now-deleted) main strategy's live execution used.
 const FEE_RESERVE_SOL = 0.01;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export function todayUtcDateString(): string {
   return new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD', UTC by construction (toISOString is always UTC)
@@ -27,11 +30,15 @@ export function drawdownPct(snapshotBalanceUsd: number, currentBalanceUsd: numbe
  * summed trade P&L alone would be misleading. Only checked before a live
  * BUY; an already-open position still sells normally once its tailed wallet
  * sells, capped or not -- this only pauses new entries.
+ *
+ * Takes the current balance as a parameter rather than fetching it itself
+ * -- the caller (executeLiveBuy) already has a fresh BotWalletSnapshot from
+ * a single combined read, and re-fetching here would be a second redundant
+ * price-provider round trip for every live buy.
  */
-export async function checkDailyLossCapOk(): Promise<{ ok: true } | { ok: false; reason: string }> {
+export async function checkDailyLossCapOk(currentBalanceUsd: number): Promise<{ ok: true } | { ok: false; reason: string }> {
   if (!env.TAIL_LIVE_DAILY_LOSS_CAP_ENABLED) return { ok: true };
 
-  const currentBalanceUsd = await getBotWalletBalanceUsd();
   const today = todayUtcDateString();
   const snapshot = getTailLiveDailySnapshot();
 
@@ -60,8 +67,14 @@ export type LiveBuyResult =
  * TAIL_STARTING_BALANCE_USD, which is paper-only). Fill quantity is read
  * back from the on-chain balance delta before/after, not the quote's
  * outAmount estimate, so it's correct regardless of slippage.
+ *
+ * Takes a BotWalletSnapshot (see execution/liveTrading.ts) instead of
+ * fetching the wallet's balance/SOL price itself -- the caller already has
+ * one fresh read (it needed totalBalanceUsd to compute usdSize in the first
+ * place), and re-fetching here would triple the price-provider calls this
+ * one live buy makes for no benefit.
  */
-export async function executeLiveBuy(tokenAddress: string, usdSize: number): Promise<LiveBuyResult> {
+export async function executeLiveBuy(tokenAddress: string, usdSize: number, wallet: BotWalletSnapshot): Promise<LiveBuyResult> {
   // Everything below is wrapped in one try/catch, not just the swap itself
   // -- by the time this is called, mirror.ts has already inserted a
   // 'pending' tail_trades row, and the only thing that marks it
@@ -71,25 +84,37 @@ export async function executeLiveBuy(tokenAddress: string, usdSize: number): Pro
   // uncaught instead would leave that row stuck open with no quantity
   // forever -- a real bug found from a live GeckoTerminal 429.
   try {
-    const capCheck = await checkDailyLossCapOk();
+    const capCheck = await checkDailyLossCapOk(wallet.totalBalanceUsd);
     if (!capCheck.ok) return { ok: false, reason: capCheck.reason };
 
-    const [solBalance, solOverview] = await Promise.all([getBotSolBalance(), getTokenOverview(SOL_MINT)]);
-    const solAmount = usdSize / solOverview.price;
-    if (solAmount + FEE_RESERVE_SOL > solBalance) {
+    const solAmount = usdSize / wallet.solPriceUsd;
+    if (solAmount + FEE_RESERVE_SOL > wallet.solBalance) {
       return {
         ok: false,
-        reason: `insufficient SOL balance: need ~${solAmount.toFixed(4)} + ${FEE_RESERVE_SOL} fee reserve, have ${solBalance.toFixed(4)}`,
+        reason: `insufficient SOL balance: need ~${solAmount.toFixed(4)} + ${FEE_RESERVE_SOL} fee reserve, have ${wallet.solBalance.toFixed(4)}`,
       };
     }
 
     const before = await getTokenBalanceRaw(tokenAddress);
     const result = await swapSolForToken(tokenAddress, solAmount, env.TAIL_LIVE_SLIPPAGE_BPS);
-    const after = await getTokenBalanceRaw(tokenAddress);
 
-    const quantity = (after?.uiAmount ?? 0) - (before?.uiAmount ?? 0);
+    // A hosted/load-balanced RPC endpoint can serve this immediate
+    // follow-up read from a backend node whose token-account index briefly
+    // lags the just-confirmed swap -- a real, successful buy read back as
+    // "balance didn't increase" would mark the trade unfillable_entry while
+    // the wallet actually holds the tokens (real SOL already spent), with
+    // nothing left tracking that position. A few short retries distinguish
+    // that lag from a genuine failure at low cost (only paid when the first
+    // read comes back stale).
+    let quantity = 0;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (attempt > 0) await sleep(400);
+      const after = await getTokenBalanceRaw(tokenAddress);
+      quantity = (after?.uiAmount ?? 0) - (before?.uiAmount ?? 0);
+      if (quantity > 0) break;
+    }
     if (quantity <= 0) {
-      return { ok: false, reason: `swap ${result.signature} confirmed but token balance didn't increase` };
+      return { ok: false, reason: `swap ${result.signature} confirmed but token balance didn't increase (checked ${4} times)` };
     }
 
     return { ok: true, signature: result.signature, quantity, fillPriceUsd: usdSize / quantity };
@@ -109,6 +134,19 @@ export type LiveSellResult =
  * quantity) is always the right amount to sell, whether triggered by
  * detecting the tailed wallet's own sell or the dashboard's manual Sell
  * button.
+ *
+ * SOL proceeds are read from the wallet's actual SOL balance delta
+ * before/after the swap, NOT swapTokenForSol's result.outAmount -- that's
+ * only the pre-trade quote's estimate (jupiter.ts forwards quote.outAmount
+ * verbatim), which can differ from real proceeds by the actual slippage
+ * between quote and execution. An earlier version of this function trusted
+ * the quote estimate here while executeLiveBuy already avoided the same
+ * mistake on the buy side (see its docstring) -- every live sell's recorded
+ * fill price and P&L was silently off by real slippage until this fix. The
+ * balance delta also naturally nets out the tx fee (a real cost, correctly
+ * reducing recorded proceeds slightly) with no double-counting risk the way
+ * summing transfer legs would have -- see parseSwap.ts's netLegsForWallet
+ * docstring for that unrelated but analogous bug.
  */
 export async function executeLiveSell(tokenAddress: string): Promise<LiveSellResult> {
   try {
@@ -117,9 +155,16 @@ export async function executeLiveSell(tokenAddress: string): Promise<LiveSellRes
       return { ok: false, reason: `no on-chain balance found for ${tokenAddress} -- nothing to sell` };
     }
 
+    const solBefore = await getBotSolBalance();
     const result = await swapTokenForSol(tokenAddress, balance.amountRaw, env.TAIL_LIVE_SLIPPAGE_BPS);
+    const solAfter = await getBotSolBalance();
+
+    const solReceived = solAfter - solBefore;
+    if (solReceived <= 0) {
+      return { ok: false, reason: `swap ${result.signature} confirmed but SOL balance didn't increase` };
+    }
+
     const solOverview = await getTokenOverview(SOL_MINT);
-    const solReceived = Number(result.outAmount) / LAMPORTS_PER_SOL;
     const usdReceived = solReceived * solOverview.price;
 
     return { ok: true, signature: result.signature, quantitySold: balance.uiAmount, fillPriceUsd: usdReceived / balance.uiAmount };

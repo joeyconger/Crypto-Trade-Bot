@@ -198,13 +198,23 @@ export function createTailDashboardRouter(config: TailConfig): Router {
         res.status(502).json({ error: result.reason });
         return;
       }
-      closeTailTradeManually({
+      // Guarded on status='open' (see closeTailTradeManually's docstring) --
+      // a tailed-wallet sell can race this same click and win, in which case
+      // the swap above still genuinely succeeded (real SOL was received)
+      // but this row is no longer the one to record it on.
+      const { applied } = closeTailTradeManually({
         tradeId,
         exitPriceUsd: result.fillPriceUsd,
         exitLiquidityUsd: null,
         exitMarketCapUsd: null,
         ownExitTxSignature: result.signature,
       });
+      if (!applied) {
+        res.status(409).json({
+          error: `sell executed (tx ${result.signature}) but the position was already closed by a wallet-mirrored exit that landed first -- check the trade's history, no need to sell again`,
+        });
+        return;
+      }
       res.json({ ok: true, exitPriceUsd: result.fillPriceUsd, signature: result.signature });
       return;
     }
@@ -215,12 +225,16 @@ export function createTailDashboardRouter(config: TailConfig): Router {
         res.status(502).json({ error: "no usable current price available right now -- try again in a moment" });
         return;
       }
-      closeTailTradeManually({
+      const { applied } = closeTailTradeManually({
         tradeId,
         exitPriceUsd: overview.price,
         exitLiquidityUsd: overview.liquidityUsd ?? null,
         exitMarketCapUsd: overview.marketCapUsd ?? null,
       });
+      if (!applied) {
+        res.status(409).json({ error: "position was already closed by a wallet-mirrored exit -- no need to sell again" });
+        return;
+      }
       res.json({ ok: true, exitPriceUsd: overview.price });
     } catch (err) {
       res.status(502).json({ error: err instanceof Error ? err.message : String(err) });

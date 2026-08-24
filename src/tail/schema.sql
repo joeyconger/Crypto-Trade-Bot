@@ -15,17 +15,24 @@ CREATE TABLE IF NOT EXISTS tail_wallets (
 
 -- One row per mirrored round trip -- opened by the tailed wallet's buy,
 -- closed by its matching sell. status distinguishes a clean round trip from
--- the two ways this can go wrong: no price data to open the paper position
--- at all (unfillable_entry, no position ever opened), or a position that
+-- the ways this can go wrong: no price data to open the paper position at
+-- all (unfillable_entry, no position ever opened), or a position that
 -- opened fine but couldn't get a price when the wallet sold
 -- (unfillable_exit -- left open, flagged for manual review, never silently
--- dropped or fabricated closed).
+-- dropped or fabricated closed). 'pending' is the brief window between the
+-- row being inserted (so a second incoming buy for the same token can be
+-- recognized as a duplicate immediately) and its entry fill actually
+-- completing -- NOT yet a real, sellable position. Only recordEntryFill
+-- (pending -> open) and markEntryUnfillable (pending -> unfillable_entry)
+-- transition out of it, and both guard on status = 'pending' so a race
+-- can't clobber an outcome that already landed. See recordEntryFill's
+-- docstring in db.ts for the corruption this fixed.
 CREATE TABLE IF NOT EXISTS tail_trades (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   wallet_address TEXT NOT NULL REFERENCES tail_wallets (address),
   token_address TEXT NOT NULL,
   token_symbol TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed', 'unfillable_entry', 'unfillable_exit')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'open', 'closed', 'unfillable_entry', 'unfillable_exit')),
 
   usd_size REAL NOT NULL, -- TAIL_STARTING_BALANCE_USD x TAIL_POSITION_SIZE_PCT, snapshotted at entry (fixed, not compounding -- same convention as the main bot's paper sizing)
   quantity REAL, -- NULL when unfillable_entry -- no position was ever opened

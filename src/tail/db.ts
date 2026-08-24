@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type Database from "better-sqlite3";
 import { getDb } from "../db/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -24,12 +25,49 @@ const TAIL_TRADES_MIGRATIONS: string[] = [
   "ALTER TABLE tail_trades ADD COLUMN own_exit_tx_signature TEXT",
 ];
 
+/**
+ * SQLite has no ALTER TABLE for a CHECK constraint -- unlike the ADD COLUMN
+ * migrations above, adding the 'pending' status value to an EXISTING
+ * persisted tail_trades table (its CHECK constraint was baked in at CREATE
+ * TABLE time) requires recreating the table. Detects whether the
+ * currently-persisted table's constraint already allows 'pending' by
+ * inspecting its stored SQL text; if not, renames it aside so the
+ * schema.sql CREATE TABLE that runs right after this builds a fresh table
+ * (with the updated constraint) under the real name, then finishStatusCheckMigration
+ * copies every row across by column name (safe even if the column sets
+ * differ) and drops the renamed-aside copy. No-ops on a brand-new database
+ * (schema.sql already creates the table correctly the first time) or once
+ * this has already run.
+ */
+function prepareStatusCheckMigration(db: Database.Database): boolean {
+  const existing = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tail_trades'`).get() as
+    | { sql: string }
+    | undefined;
+  if (!existing || existing.sql.includes("'pending'")) return false;
+  db.exec(`ALTER TABLE tail_trades RENAME TO tail_trades_pre_pending_migration`);
+  return true;
+}
+
+function finishStatusCheckMigration(db: Database.Database): void {
+  const oldCols = (db.prepare(`PRAGMA table_info(tail_trades_pre_pending_migration)`).all() as { name: string }[]).map(
+    (c) => c.name,
+  );
+  const newColSet = new Set(
+    (db.prepare(`PRAGMA table_info(tail_trades)`).all() as { name: string }[]).map((c) => c.name),
+  );
+  const sharedCols = oldCols.filter((name) => newColSet.has(name)).join(", ");
+  db.exec(`INSERT INTO tail_trades (${sharedCols}) SELECT ${sharedCols} FROM tail_trades_pre_pending_migration`);
+  db.exec(`DROP TABLE tail_trades_pre_pending_migration`);
+}
+
 /** Applies tail_*'s own schema against the shared DB connection. Idempotent (CREATE TABLE IF NOT EXISTS + best-effort column migrations), safe to call on every startup. */
 export function initTailSchema(): void {
   if (initialized) return;
   const schema = fs.readFileSync(path.join(__dirname, "schema.sql"), "utf8");
   const db = getDb();
+  const needsStatusCheckMigration = prepareStatusCheckMigration(db);
   db.exec(schema);
+  if (needsStatusCheckMigration) finishStatusCheckMigration(db);
   for (const migration of TAIL_TRADES_MIGRATIONS) {
     try {
       db.exec(migration);
@@ -111,7 +149,7 @@ export interface TailTradeRow {
   wallet_address: string;
   token_address: string;
   token_symbol: string;
-  status: "open" | "closed" | "unfillable_entry" | "unfillable_exit";
+  status: "pending" | "open" | "closed" | "unfillable_entry" | "unfillable_exit";
   usd_size: number;
   quantity: number | null;
   wallet_entry_price_usd: number;
@@ -159,7 +197,7 @@ export interface OpenTailEntryInput {
   isLive?: boolean;
 }
 
-/** Inserts the row immediately on detection, before the delayed sim fill (paper) or the swap result (live) is known -- status/quantity/fill fields are filled in by recordEntryFill once that resolves. */
+/** Inserts the row immediately on detection, before the delayed sim fill (paper) or the swap result (live) is known -- status starts 'pending' (not yet a real/sellable position) until recordEntryFill or markEntryUnfillable resolves it. */
 export function insertPendingTailEntry(input: OpenTailEntryInput): number {
   const result = getDb()
     .prepare(
@@ -168,7 +206,7 @@ export function insertPendingTailEntry(input: OpenTailEntryInput): number {
         wallet_entry_price_usd, wallet_entry_tx_signature, wallet_entry_onchain_at,
         entry_detected_at, entry_detection_latency_ms, is_live
       ) VALUES (
-        @walletAddress, @tokenAddress, @tokenSymbol, 'open', @usdSize,
+        @walletAddress, @tokenAddress, @tokenSymbol, 'pending', @usdSize,
         @walletEntryPriceUsd, @walletEntryTxSignature, @walletEntryOnchainAt,
         @entryDetectedAt, @entryDetectionLatencyMs, @isLive
       )`,
@@ -187,12 +225,27 @@ export interface EntryFillResult {
   ownEntryTxSignature?: string; // live only -- this bot's own buy tx signature
 }
 
-export function recordEntryFill(input: EntryFillResult): void {
+/**
+ * Transitions pending -> open. Guarded on `status = 'pending'` -- a fast
+ * tailed-wallet buy-then-sell can have handleParsedSell's exit-detection
+ * path (see mirror.ts) reach and resolve this SAME row (to unfillable_exit,
+ * since no real position existed yet to sell) before this fill finishes.
+ * An earlier version of this function set status = 'open' unconditionally,
+ * which would then silently overwrite that outcome back to 'open' once the
+ * (real, successful) fill landed -- leaving a real held position recorded
+ * as open with the tailed wallet's sell event already consumed and gone,
+ * so it would never automatically exit. Returns whether the guarded UPDATE
+ * actually applied; when it didn't (lost the race), the caller is holding a
+ * real fill (real tokens bought, real SOL spent for a live trade) that this
+ * row can no longer represent -- it must log that loudly rather than drop
+ * it, since nothing else will ever track that position again.
+ */
+export function recordEntryFill(input: EntryFillResult): { applied: boolean } {
   const trade = getTailTradeById(input.tradeId)!;
   const entrySlippageVsWalletPct =
     ((input.simEntryFillPriceUsd - trade.wallet_entry_price_usd) / trade.wallet_entry_price_usd) * 100;
 
-  getDb()
+  const result = getDb()
     .prepare(
       `UPDATE tail_trades SET
         status = 'open', quantity = @quantity,
@@ -201,7 +254,7 @@ export function recordEntryFill(input: EntryFillResult): void {
         entry_slippage_vs_wallet_pct = @entrySlippageVsWalletPct,
         own_entry_tx_signature = COALESCE(@ownEntryTxSignature, own_entry_tx_signature),
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE id = @tradeId`,
+      WHERE id = @tradeId AND status = 'pending'`,
     )
     .run({
       ...input,
@@ -210,12 +263,14 @@ export function recordEntryFill(input: EntryFillResult): void {
       entrySlippageVsWalletPct,
       ownEntryTxSignature: input.ownEntryTxSignature ?? null,
     });
+  return { applied: result.changes > 0 };
 }
 
+/** Transitions pending -> unfillable_entry. Guarded on status = 'pending' for the same reason as recordEntryFill, though in practice nothing else writes to a still-pending row from the buy side. */
 export function markEntryUnfillable(tradeId: number): void {
   getDb()
     .prepare(
-      `UPDATE tail_trades SET status = 'unfillable_entry', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`,
+      `UPDATE tail_trades SET status = 'unfillable_entry', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND status = 'pending'`,
     )
     .run(tradeId);
 }
@@ -224,6 +279,24 @@ export function getOpenTailTrade(walletAddress: string, tokenAddress: string): T
   return getDb()
     .prepare(
       `SELECT * FROM tail_trades WHERE wallet_address = ? AND token_address = ? AND status = 'open' ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(walletAddress, tokenAddress) as TailTradeRow | undefined;
+}
+
+/**
+ * Like getOpenTailTrade, but also matches a still-'pending' row (a buy
+ * whose entry fill hasn't landed yet). Used specifically for the
+ * duplicate-buy guard in mirror.ts's handleParsedBuy -- a second buy signal
+ * for the same token arriving while the first one's fill is still in
+ * flight must be recognized as a duplicate too, not just once it's fully
+ * 'open'. getOpenTailTrade itself stays 'open'-only since its other use
+ * (matching a sell against a real, already-filled position) must never
+ * treat a not-yet-real pending row as something to sell.
+ */
+export function getActiveOrPendingTailTrade(walletAddress: string, tokenAddress: string): TailTradeRow | undefined {
+  return getDb()
+    .prepare(
+      `SELECT * FROM tail_trades WHERE wallet_address = ? AND token_address = ? AND status IN ('pending', 'open') ORDER BY created_at DESC LIMIT 1`,
     )
     .get(walletAddress, tokenAddress) as TailTradeRow | undefined;
 }
@@ -279,7 +352,19 @@ export interface ExitFillResult {
  * ~51% below the wallet's entry price produced a "wallet-exact" -200.48%
  * loss from a token that "only" dropped ~97%.
  */
-export function recordExitFill(input: ExitFillResult): void {
+/**
+ * Guarded on `status = 'open'` -- the dashboard's manual Sell button and a
+ * detected wallet-mirrored sell can both act on the same trade at nearly
+ * the same moment (a user clicks Sell right as the tailed wallet also
+ * sells). Only one swap can actually succeed on-chain (the second either
+ * finds a zero balance or fails outright once the first empties the
+ * account), but without this guard the LOSING side's write -- e.g.
+ * markExitUnfillable, or this function racing closeTailTradeManually --
+ * could still land after the winner's and silently overwrite a correct
+ * 'closed' result back to 'unfillable_exit' (or vice versa). Returns
+ * whether the guarded UPDATE actually applied.
+ */
+export function recordExitFill(input: ExitFillResult): { applied: boolean } {
   const trade = getTailTradeById(input.tradeId)!;
   const quantity = trade.quantity!;
   const exitSlippageVsWalletPct = ((input.simExitFillPriceUsd - trade.wallet_exit_price_usd!) / trade.wallet_exit_price_usd!) * 100;
@@ -291,7 +376,7 @@ export function recordExitFill(input: ExitFillResult): void {
   const walletExactPnlUsd = (trade.wallet_exit_price_usd! - trade.wallet_entry_price_usd) * walletExactQuantity;
   const walletExactPnlPct = (walletExactPnlUsd / trade.usd_size) * 100;
 
-  getDb()
+  const result = getDb()
     .prepare(
       `UPDATE tail_trades SET
         status = 'closed',
@@ -302,7 +387,7 @@ export function recordExitFill(input: ExitFillResult): void {
         wallet_exact_pnl_usd = @walletExactPnlUsd, wallet_exact_pnl_pct = @walletExactPnlPct,
         own_exit_tx_signature = COALESCE(@ownExitTxSignature, own_exit_tx_signature),
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE id = @tradeId`,
+      WHERE id = @tradeId AND status = 'open'`,
     )
     .run({
       ...input,
@@ -315,6 +400,7 @@ export function recordExitFill(input: ExitFillResult): void {
       walletExactPnlUsd,
       walletExactPnlPct,
     });
+  return { applied: result.changes > 0 };
 }
 
 export interface ManualCloseResult {
@@ -335,13 +421,14 @@ export interface ManualCloseResult {
  * against. closed_manually = 1 marks the row so the dashboard and any P&L
  * analysis can tell these apart from wallet-mirrored exits.
  */
-export function closeTailTradeManually(input: ManualCloseResult): void {
+/** Guarded on `status = 'open'` -- see recordExitFill's docstring for the race this and it share. Returns whether the guarded UPDATE actually applied. */
+export function closeTailTradeManually(input: ManualCloseResult): { applied: boolean } {
   const trade = getTailTradeById(input.tradeId)!;
   const quantity = trade.quantity!;
   const pnlUsd = (input.exitPriceUsd - trade.sim_entry_fill_price_usd!) * quantity;
   const pnlPct = (pnlUsd / trade.usd_size) * 100;
 
-  getDb()
+  const result = getDb()
     .prepare(
       `UPDATE tail_trades SET
         status = 'closed', closed_manually = 1,
@@ -350,15 +437,17 @@ export function closeTailTradeManually(input: ManualCloseResult): void {
         pnl_usd = @pnlUsd, pnl_pct = @pnlPct,
         own_exit_tx_signature = COALESCE(@ownExitTxSignature, own_exit_tx_signature),
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE id = @tradeId`,
+      WHERE id = @tradeId AND status = 'open'`,
     )
     .run({ ...input, ownExitTxSignature: input.ownExitTxSignature ?? null, pnlUsd, pnlPct });
+  return { applied: result.changes > 0 };
 }
 
+/** Guarded on `status = 'open'` -- see recordExitFill's docstring for the race this and it share. */
 export function markExitUnfillable(tradeId: number): void {
   getDb()
     .prepare(
-      `UPDATE tail_trades SET status = 'unfillable_exit', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`,
+      `UPDATE tail_trades SET status = 'unfillable_exit', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND status = 'open'`,
     )
     .run(tradeId);
 }

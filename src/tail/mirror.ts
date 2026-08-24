@@ -4,12 +4,13 @@ import { resolveTokenSymbol } from "../data/resolveTokenSymbol.js";
 import { getTokenOverview } from "../data/priceProvider.js";
 import { simulateDelayedFill, getQuoteUsdPrice } from "./simulateFill.js";
 import { executeLiveBuy, executeLiveSell } from "./liveExecution.js";
-import { getBotWalletBalanceUsd } from "../execution/liveTrading.js";
+import { getBotWalletSnapshot, type BotWalletSnapshot } from "../execution/liveTrading.js";
 import {
   insertPendingTailEntry,
   recordEntryFill,
   markEntryUnfillable,
   getOpenTailTrade,
+  getActiveOrPendingTailTrade,
   recordExitDetection,
   recordExitFill,
   markExitUnfillable,
@@ -43,13 +44,18 @@ export async function handleParsedBuy(
   detectedAt: Date,
   config: TailConfig,
 ): Promise<void> {
-  const existing = getOpenTailTrade(walletAddress, swap.tokenAddress);
+  // Matches BOTH 'pending' and 'open', not just 'open' -- a second buy
+  // signal for the same token can arrive while the first one's entry fill
+  // is still in flight (a live swap is not instant), and that still-pending
+  // row needs to be recognized as a duplicate too, not just once it's
+  // fully open.
+  const existing = getActiveOrPendingTailTrade(walletAddress, swap.tokenAddress);
   if (existing) {
     insertTailWebhookLog(
       walletAddress,
       swap.txSignature,
       "ignored_already_open",
-      `already has an open tail_trade (id ${existing.id}) for this token -- position averaging isn't modeled in v1, ignoring this buy`,
+      `already has ${existing.status === "pending" ? "a pending (still filling)" : "an open"} tail_trade (id ${existing.id}) for this token -- position averaging isn't modeled in v1, ignoring this buy`,
     );
     return;
   }
@@ -74,9 +80,15 @@ export async function handleParsedBuy(
   // generic handler_error coverage-gap catch, which would silently drop a
   // real buy signal with a vague error instead of a wallet-attributed one.
   let usdSize: number;
+  // Captured once here and threaded into executeLiveBuy below -- a single
+  // shared read instead of three independent balance/price lookups spread
+  // across sizing, the daily-loss-cap check, and the swap conversion, which
+  // an earlier version of this path did (see BotWalletSnapshot's docstring).
+  let liveWalletSnapshot: BotWalletSnapshot | undefined;
   if (config.liveTradingEnabled) {
     try {
-      usdSize = ((await getBotWalletBalanceUsd()) * config.positionSizePct) / 100;
+      liveWalletSnapshot = await getBotWalletSnapshot();
+      usdSize = (liveWalletSnapshot.totalBalanceUsd * config.positionSizePct) / 100;
     } catch (err) {
       insertTailWebhookLog(
         walletAddress,
@@ -112,14 +124,14 @@ export async function handleParsedBuy(
   );
 
   if (config.liveTradingEnabled) {
-    const result = await executeLiveBuy(swap.tokenAddress, usdSize);
+    const result = await executeLiveBuy(swap.tokenAddress, usdSize, liveWalletSnapshot!);
     if (!result.ok) {
       markEntryUnfillable(tradeId);
       insertTailWebhookLog(walletAddress, swap.txSignature, "parse_error", `tail_trade ${tradeId}: live buy failed -- marked unfillable_entry: ${result.reason}`);
       return;
     }
     const { liquidityUsd, marketCapUsd } = await tryGetLiquidityAndMcap(swap.tokenAddress);
-    recordEntryFill({
+    const { applied } = recordEntryFill({
       tradeId,
       simEntryFillAt: new Date().toISOString(),
       simEntryFillPriceUsd: result.fillPriceUsd,
@@ -128,6 +140,21 @@ export async function handleParsedBuy(
       quantity: result.quantity,
       ownEntryTxSignature: result.signature,
     });
+    if (!applied) {
+      // Lost the race: this row was no longer 'pending' by the time the
+      // fill landed (almost certainly a fast tailed-wallet sell already
+      // resolved it to unfillable_exit -- see recordEntryFill's docstring).
+      // The swap itself genuinely succeeded -- real SOL was spent and the
+      // wallet now holds real tokens -- but this row can no longer
+      // represent that position, and nothing else will track it. This must
+      // be loud: it's an untracked real holding needing manual review.
+      insertTailWebhookLog(
+        walletAddress,
+        swap.txSignature,
+        "parse_error",
+        `tail_trade ${tradeId}: live buy filled (qty ${result.quantity}, tx ${result.signature}) but the row was no longer pending (lost a race with a fast sell) -- fill NOT recorded, real position needs MANUAL reconciliation`,
+      );
+    }
     return;
   }
 
@@ -143,7 +170,7 @@ export async function handleParsedBuy(
     return;
   }
 
-  recordEntryFill({
+  const { applied } = recordEntryFill({
     tradeId,
     simEntryFillAt: new Date().toISOString(),
     simEntryFillPriceUsd: fill.priceUsd,
@@ -151,6 +178,14 @@ export async function handleParsedBuy(
     entryMarketCapUsd: fill.marketCapUsd,
     quantity: usdSize / fill.priceUsd,
   });
+  if (!applied) {
+    insertTailWebhookLog(
+      walletAddress,
+      swap.txSignature,
+      "parse_error",
+      `tail_trade ${tradeId}: sim fill completed but the row was no longer pending (lost a race with a fast sell) -- fill NOT recorded`,
+    );
+  }
 }
 
 export async function handleParsedSell(
@@ -208,7 +243,7 @@ export async function handleParsedSell(
       return;
     }
     const { liquidityUsd, marketCapUsd } = await tryGetLiquidityAndMcap(swap.tokenAddress);
-    recordExitFill({
+    const { applied } = recordExitFill({
       tradeId: open.id,
       simExitFillAt: new Date().toISOString(),
       simExitFillPriceUsd: result.fillPriceUsd,
@@ -216,6 +251,19 @@ export async function handleParsedSell(
       exitMarketCapUsd: marketCapUsd,
       ownExitTxSignature: result.signature,
     });
+    if (!applied) {
+      // Lost the race: the row was no longer 'open' by the time this fill
+      // landed -- almost certainly the dashboard's manual Sell button
+      // closed it first. The swap genuinely succeeded (real SOL received),
+      // but this row can no longer represent that outcome -- log loudly
+      // rather than silently overwrite whatever the winner recorded.
+      insertTailWebhookLog(
+        walletAddress,
+        swap.txSignature,
+        "parse_error",
+        `tail_trade ${open.id}: live sell filled (tx ${result.signature}) but the row was no longer open (lost a race, likely with a manual Sell) -- fill NOT recorded, reconcile manually if needed`,
+      );
+    }
     return;
   }
 
@@ -231,11 +279,19 @@ export async function handleParsedSell(
     return;
   }
 
-  recordExitFill({
+  const { applied } = recordExitFill({
     tradeId: open.id,
     simExitFillAt: new Date().toISOString(),
     simExitFillPriceUsd: fill.priceUsd,
     exitLiquidityUsd: fill.liquidityUsd,
     exitMarketCapUsd: fill.marketCapUsd,
   });
+  if (!applied) {
+    insertTailWebhookLog(
+      walletAddress,
+      swap.txSignature,
+      "parse_error",
+      `tail_trade ${open.id}: sim exit fill completed but the row was no longer open (lost a race, likely with a manual Sell) -- fill NOT recorded`,
+    );
+  }
 }
