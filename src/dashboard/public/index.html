@@ -462,6 +462,10 @@
         <p>Wallet-tail Solana trading bot</p>
       </div>
     </div>
+    <div class="top-right" id="headerLiveBalance" style="display:none">
+      <span class="badge live"><span class="dot"></span>LIVE</span>
+      <span id="headerLiveBalanceValue" style="font-size:15px;font-weight:650">&mdash;</span>
+    </div>
   </header>
 
   <section class="panel research-panel" id="tailSection" style="display:none">
@@ -632,6 +636,7 @@
       tailModuleAvailable = !!status.enabled;
       if (!tailModuleAvailable) {
         section.style.display = "none";
+        document.getElementById("headerLiveBalance").style.display = "none";
         return;
       }
       section.style.display = "block";
@@ -642,6 +647,8 @@
       const modeBadge = document.getElementById("tailModeBadge");
       const modeNote = document.getElementById("tailModeNote");
       const liveBalanceNote = document.getElementById("tailLiveBalanceNote");
+      const headerLiveBalance = document.getElementById("headerLiveBalance");
+      const headerLiveBalanceValue = document.getElementById("headerLiveBalanceValue");
       if (status.liveTradingEnabled) {
         modeBadge.className = "badge live";
         modeBadge.innerHTML = `<span class="dot"></span>LIVE -- real funds`;
@@ -650,13 +657,17 @@
           `actual current balance. ${status.liveSlippageBps / 100}% slippage tolerance. A ${status.liveDailyLossLimitPct}% ` +
           `daily loss cap pauses new buys (not existing exits) if the wallet drops that much since UTC midnight.`;
         liveBalanceNote.style.display = "";
+        headerLiveBalance.style.display = "";
         try {
           const bal = await fetchJson("/api/live-balance");
           liveBalanceNote.innerHTML = bal.available
             ? `Live wallet balance: <strong>${fmtUsd(bal.balanceUsd)}</strong>`
             : `Live wallet balance unavailable: ${esc(bal.reason)}`;
+          headerLiveBalanceValue.innerHTML = bal.available ? fmtUsd(bal.balanceUsd) : "&mdash;";
+          headerLiveBalanceValue.title = bal.available ? "" : (bal.reason || "");
         } catch {
           liveBalanceNote.textContent = "Live wallet balance unavailable right now.";
+          headerLiveBalanceValue.innerHTML = "&mdash;";
         }
       } else {
         modeBadge.className = "badge paper";
@@ -667,6 +678,7 @@
           `would lag the wallet; "if filled at wallet's price" shows what the same trade would have made with ` +
           `zero lag, isolating how much of the result is pure latency cost.`;
         liveBalanceNote.style.display = "none";
+        headerLiveBalance.style.display = "none";
       }
 
       const perTradeSize = status.startingBalanceUsd * status.positionSizePct / 100;
@@ -774,6 +786,7 @@
       if (tailModuleAvailable !== false) console.error("tail refresh failed", err);
       tailModuleAvailable = false;
       section.style.display = "none";
+      document.getElementById("headerLiveBalance").style.display = "none";
     }
   }
 
