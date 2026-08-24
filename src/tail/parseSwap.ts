@@ -38,14 +38,38 @@ export interface ParsedSwap {
   quoteIsStable: boolean;
   txSignature: string;
   onchainAt: string; // ISO
+  // TEMPORARY diagnostic, only populated when the quote leg is WSOL -- see
+  // the comment on netLegsForWallet. Remove once the ~-50% slippage bug is
+  // confirmed/fixed.
+  quoteLegBreakdown?: { tokenTransferAmount: number; nativeTransferAmount: number };
 }
 
 export type ParseResult = { ok: true; swap: ParsedSwap } | { ok: false; reason: string };
 
 const DUST_THRESHOLD = 1e-9;
 
+/**
+ * TEMPORARY diagnostic (see quoteLegBreakdown on ParsedSwap below) -- being
+ * investigated: entry_slippage_vs_wallet_pct has been landing at a suspiciously
+ * uniform ~-50% across many trades regardless of the token's own liquidity/
+ * market cap, which points at wallet_entry_price_usd being inflated ~2x
+ * rather than real price impact. Prime suspect is right here: if a swap's
+ * SOL leg shows up as BOTH a tokenTransfers entry (WSOL_MINT) AND a
+ * nativeTransfers entry for the same underlying movement (e.g. the lamports
+ * that funded/closed a temporary wrapped-SOL account during routing), the
+ * two get summed into the same bucket below instead of being the same money
+ * counted twice. This function now also returns each source's contribution
+ * to the WSOL_MINT bucket separately so the next live trade can confirm (or
+ * rule out) that theory before a real fix is written. Remove once resolved.
+ */
+interface NettedLegs {
+  legs: ParsedSwapLeg[];
+  wsolTokenTransferAmount: number;
+  wsolNativeTransferAmount: number;
+}
+
 /** Nets every transfer touching `walletAddress` (token + native SOL) by mint, filtering out near-zero pass-through legs from multi-hop routing. */
-function netLegsForWallet(tx: HeliusTransaction, walletAddress: string): ParsedSwapLeg[] {
+function netLegsForWallet(tx: HeliusTransaction, walletAddress: string): NettedLegs {
   const netByMint = new Map<string, number>();
 
   for (const t of tx.tokenTransfers ?? []) {
@@ -57,20 +81,26 @@ function netLegsForWallet(tx: HeliusTransaction, walletAddress: string): ParsedS
     netByMint.set(t.mint, (netByMint.get(t.mint) ?? 0) + delta);
   }
 
+  const wsolTokenTransferAmount = netByMint.get(WSOL_MINT) ?? 0;
+
   let nativeDelta = 0;
   for (const t of tx.nativeTransfers ?? []) {
     if (!Number.isFinite(t.amount)) continue;
     if (t.toUserAccount === walletAddress) nativeDelta += t.amount;
     if (t.fromUserAccount === walletAddress) nativeDelta -= t.amount;
   }
+  const wsolNativeTransferAmount = nativeDelta / 1_000_000_000;
   if (nativeDelta !== 0) {
-    const lamportsToSol = nativeDelta / 1_000_000_000;
-    netByMint.set(WSOL_MINT, (netByMint.get(WSOL_MINT) ?? 0) + lamportsToSol);
+    netByMint.set(WSOL_MINT, (netByMint.get(WSOL_MINT) ?? 0) + wsolNativeTransferAmount);
   }
 
-  return [...netByMint.entries()]
-    .filter(([, amount]) => Math.abs(amount) > DUST_THRESHOLD)
-    .map(([mint, netAmount]) => ({ mint, netAmount }));
+  return {
+    legs: [...netByMint.entries()]
+      .filter(([, amount]) => Math.abs(amount) > DUST_THRESHOLD)
+      .map(([mint, netAmount]) => ({ mint, netAmount })),
+    wsolTokenTransferAmount,
+    wsolNativeTransferAmount,
+  };
 }
 
 function isQuoteMint(mint: string): boolean {
@@ -82,7 +112,7 @@ export function parseSwapForWallet(tx: HeliusTransaction, walletAddress: string)
     return { ok: false, reason: `not a SWAP event (type=${tx.type})` };
   }
 
-  const legs = netLegsForWallet(tx, walletAddress);
+  const { legs, wsolTokenTransferAmount, wsolNativeTransferAmount } = netLegsForWallet(tx, walletAddress);
   const tokenLegs = legs.filter((l) => !isQuoteMint(l.mint));
   const quoteLegs = legs.filter((l) => isQuoteMint(l.mint));
 
@@ -137,6 +167,11 @@ export function parseSwapForWallet(tx: HeliusTransaction, walletAddress: string)
       quoteIsStable: STABLECOIN_MINTS.has(quote.mint),
       txSignature: tx.signature,
       onchainAt: new Date(tx.timestamp * 1000).toISOString(),
+      // TEMPORARY diagnostic -- only meaningful when the quote leg is WSOL
+      // and both sources contributed (that's the suspected double-count).
+      ...(quote.mint === WSOL_MINT && wsolTokenTransferAmount !== 0 && wsolNativeTransferAmount !== 0
+        ? { quoteLegBreakdown: { tokenTransferAmount: wsolTokenTransferAmount, nativeTransferAmount: wsolNativeTransferAmount } }
+        : {}),
     },
   };
 }
