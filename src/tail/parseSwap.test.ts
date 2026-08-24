@@ -114,6 +114,31 @@ test("parseSwapForWallet: more than one traded-token leg is unparseable", () => 
   assert.equal(result.ok, false);
 });
 
+test("parseSwapForWallet: a SOL leg present as BOTH a WSOL tokenTransfer and a slightly larger nativeTransfer isn't double-counted (real observed shape)", () => {
+  // Live example (Sling, tx 2qDZq2iQ...): the swap's SOL leg showed up as a
+  // WSOL tokenTransfer of -56.5 AND a nativeTransfer of -56.50207408 in the
+  // same tx -- the ~0.002 SOL gap is the temporary wrapped-SOL account's
+  // rent, not a second real leg. An earlier version of this parser summed
+  // both into quoteAmount (~113, roughly double), which is exactly what
+  // produced a uniform ~-50% "slippage" on every SOL-quoted trade regardless
+  // of the token's own liquidity. The correct quoteAmount is the
+  // tokenTransfer figure alone.
+  const tx = baseTx({
+    tokenTransfers: [
+      { mint: WSOL_MINT, tokenAmount: 56.5, fromUserAccount: WALLET, toUserAccount: "poolX" },
+      { mint: TOKEN_MINT, tokenAmount: 1_000_000, fromUserAccount: "poolX", toUserAccount: WALLET },
+    ],
+    nativeTransfers: [{ amount: 56_502_074_080, fromUserAccount: WALLET, toUserAccount: "poolX" }], // 56.50207408 SOL
+  });
+
+  const result = parseSwapForWallet(tx, WALLET);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.swap.side, "buy");
+  assert.equal(result.swap.quoteMint, WSOL_MINT);
+  assert.equal(result.swap.quoteAmount, 56.5); // NOT ~113
+});
+
 test("parseSwapForWallet: a small residual SOL leg alongside a USDC-denominated buy is ignored, not fatal (real observed shape)", () => {
   // Live example: omo paid 5000 USDC, received 318,533 TOKEN, and also
   // received a small unrelated 0.027 SOL in the same tx (gas/rebate/rent

@@ -54,17 +54,6 @@ export function createTailWebhookRouter(config: TailConfig): Router {
               insertTailWebhookLog(walletAddress, tx?.signature ?? null, "ignored_non_swap", parsed.reason);
               return;
             }
-            // TEMPORARY diagnostic for the ~-50% slippage investigation --
-            // see parseSwap.ts's quoteLegBreakdown comment. Remove once resolved.
-            if (parsed.swap.quoteLegBreakdown) {
-              const { tokenTransferAmount, nativeTransferAmount } = parsed.swap.quoteLegBreakdown;
-              insertTailWebhookLog(
-                walletAddress,
-                tx?.signature ?? null,
-                parsed.swap.side === "buy" ? "parsed_buy" : "parsed_sell",
-                `DIAGNOSTIC quoteLegBreakdown for tx ${tx?.signature}: tokenTransfer WSOL=${tokenTransferAmount}, native SOL=${nativeTransferAmount}, summed=${tokenTransferAmount + nativeTransferAmount} -- if these look like two views of the same movement rather than genuinely separate amounts, that confirms the double-count theory`,
-              );
-            }
             if (parsed.swap.side === "buy") {
               await handleParsedBuy(parsed.swap, walletAddress, detectedAt, config);
             } else {
