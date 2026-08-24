@@ -38,6 +38,22 @@ export function initTailSchema(): void {
       if (!message.includes("duplicate column")) throw err;
     }
   }
+
+  // One-time-per-startup backfill: an earlier version of recordExitFill (see
+  // its docstring) computed wallet_exact_pnl_usd/pct off the wrong quantity
+  // basis, which could push the % past +-100% on a single spot long -- not
+  // a schema change, just recomputing two already-stored columns from other
+  // already-stored columns (no live network/price data needed), so it's
+  // safe and cheap to just always recompute rather than track "has this
+  // run" separately. Only touches wallet-mirrored closes (wallet_exit_price_usd
+  // set) -- manual closes correctly leave these NULL, untouched here.
+  db.exec(`
+    UPDATE tail_trades
+    SET wallet_exact_pnl_usd = (wallet_exit_price_usd - wallet_entry_price_usd) * (usd_size / wallet_entry_price_usd),
+        wallet_exact_pnl_pct = ((wallet_exit_price_usd - wallet_entry_price_usd) / wallet_entry_price_usd) * 100
+    WHERE status = 'closed' AND wallet_exit_price_usd IS NOT NULL AND wallet_entry_price_usd IS NOT NULL AND wallet_entry_price_usd != 0
+  `);
+
   initialized = true;
 }
 
@@ -247,7 +263,22 @@ export interface ExitFillResult {
   ownExitTxSignature?: string; // live only -- this bot's own sell tx signature
 }
 
-/** Closes the trade fully: computes both the realistic simulated P&L and the "if filled at the wallet's exact price/time" comparison P&L, from the same quantity basis. */
+/**
+ * Closes the trade fully: computes both the realistic simulated P&L and the
+ * "if filled at the wallet's exact price/time" comparison P&L. These use
+ * TWO DIFFERENT quantity bases, not the same one -- a fixed $usd_size
+ * invested at the sim fill price for the simulated P&L, vs. that same
+ * $usd_size invested at the WALLET's own entry price for the wallet-exact
+ * P&L. Reusing the sim quantity for both (an earlier version of this
+ * function did) silently rescales the wallet-exact result by
+ * walletEntryPrice/simEntryPrice -- when the sim fill was much cheaper than
+ * the wallet's own entry (common for a fast-moving token in the few seconds
+ * of detection lag), that inflates the wallet-exact P&L, and can push its
+ * % past +-100% on a single spot long, which is only possible if the two
+ * bases are (wrongly) mixed. Confirmed live on a real trade: sim entry
+ * ~51% below the wallet's entry price produced a "wallet-exact" -200.48%
+ * loss from a token that "only" dropped ~97%.
+ */
 export function recordExitFill(input: ExitFillResult): void {
   const trade = getTailTradeById(input.tradeId)!;
   const quantity = trade.quantity!;
@@ -256,7 +287,8 @@ export function recordExitFill(input: ExitFillResult): void {
   const pnlUsd = (input.simExitFillPriceUsd - trade.sim_entry_fill_price_usd!) * quantity;
   const pnlPct = (pnlUsd / trade.usd_size) * 100;
 
-  const walletExactPnlUsd = (trade.wallet_exit_price_usd! - trade.wallet_entry_price_usd) * quantity;
+  const walletExactQuantity = trade.usd_size / trade.wallet_entry_price_usd;
+  const walletExactPnlUsd = (trade.wallet_exit_price_usd! - trade.wallet_entry_price_usd) * walletExactQuantity;
   const walletExactPnlPct = (walletExactPnlUsd / trade.usd_size) * 100;
 
   getDb()
