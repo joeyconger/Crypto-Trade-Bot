@@ -37,6 +37,9 @@ function trade(overrides: Partial<TailTradeRow>): TailTradeRow {
     wallet_exact_pnl_usd: 20, // (1.2 - 1.0) * 10
     wallet_exact_pnl_pct: 20,
     closed_manually: 0,
+    is_live: 0,
+    own_entry_tx_signature: null,
+    own_exit_tx_signature: null,
     created_at: "2026-01-01T00:00:01.000Z",
     updated_at: "2026-01-01T01:00:06.000Z",
     ...overrides,

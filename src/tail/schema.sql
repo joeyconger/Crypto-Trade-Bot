@@ -1,13 +1,10 @@
--- Wallet-tail research module -- fully separate paper-trading experiment
--- that mirrors a specific wallet's swaps to test whether copy-tailing is
--- viable. Deliberately isolated from the main strategy's trades/positions/
--- circuit_breaker_state tables: no foreign keys into them, no shared IDs,
--- never read by src/engine/loop.ts or anything under src/onchain/*. See
--- src/tail/README.md.
+-- Wallet-tail module -- mirrors specific wallets' swaps as paper trades by
+-- default, or real trades once TAIL_LIVE_TRADING is on (src/tail/liveExecution.ts).
 --
--- Lives in the same physical SQLite file as the main schema (src/db/schema.sql)
--- for operational simplicity (one file to back up, one connection pool), but
--- every table here is prefixed tail_ and touched only by code under src/tail/.
+-- Lives in the same physical SQLite file as the shared db schema
+-- (src/db/schema.sql) for operational simplicity (one file to back up, one
+-- connection pool), but every table here is prefixed tail_ and touched only
+-- by code under src/tail/.
 
 CREATE TABLE IF NOT EXISTS tail_wallets (
   address TEXT PRIMARY KEY,
@@ -78,6 +75,17 @@ CREATE TABLE IF NOT EXISTS tail_trades (
   -- against, only pnl_usd/pnl_pct (this app's own simulated result) apply.
   closed_manually INTEGER NOT NULL DEFAULT 0,
 
+  -- 1 when this trade was opened/closed with a real Jupiter swap
+  -- (TAIL_LIVE_TRADING was on at the time) rather than simulated -- stamped
+  -- at insert time so paper history from before a live flip stays honestly
+  -- labeled. own_entry_tx_signature/own_exit_tx_signature are this bot's OWN
+  -- swap signatures (distinct from wallet_entry_tx_signature/
+  -- wallet_exit_tx_signature, which are always the TAILED wallet's tx) --
+  -- both NULL for paper trades.
+  is_live INTEGER NOT NULL DEFAULT 0,
+  own_entry_tx_signature TEXT,
+  own_exit_tx_signature TEXT,
+
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -119,3 +127,19 @@ CREATE TABLE IF NOT EXISTS tail_coverage_gaps (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tail_coverage_gaps_detected_at ON tail_coverage_gaps (detected_at);
+
+-- Single-row state for the live-trading daily loss cap
+-- (TAIL_LIVE_DAILY_LOSS_LIMIT_PCT, src/tail/liveExecution.ts). Snapshots the
+-- live wallet's USD balance the first time a live buy is attempted each UTC
+-- day, so a later buy that same day can check "have we dropped more than
+-- the limit % since this morning" without depending on trade-level P&L
+-- alone -- a SOL price move affects the whole balance, not just tail's own
+-- trades, so the balance itself (not summed pnl_usd) is the honest baseline.
+CREATE TABLE IF NOT EXISTS tail_live_daily_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  snapshot_date TEXT, -- UTC date, 'YYYY-MM-DD' -- NULL until the first live buy attempt ever
+  snapshot_balance_usd REAL,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+INSERT OR IGNORE INTO tail_live_daily_state (id, snapshot_date, snapshot_balance_usd) VALUES (1, NULL, NULL);

@@ -19,6 +19,9 @@ const TAIL_TRADES_MIGRATIONS: string[] = [
   "ALTER TABLE tail_trades ADD COLUMN entry_market_cap_usd REAL",
   "ALTER TABLE tail_trades ADD COLUMN exit_market_cap_usd REAL",
   "ALTER TABLE tail_trades ADD COLUMN closed_manually INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE tail_trades ADD COLUMN is_live INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE tail_trades ADD COLUMN own_entry_tx_signature TEXT",
+  "ALTER TABLE tail_trades ADD COLUMN own_exit_tx_signature TEXT",
 ];
 
 /** Applies tail_*'s own schema against the shared DB connection. Idempotent (CREATE TABLE IF NOT EXISTS + best-effort column migrations), safe to call on every startup. */
@@ -120,6 +123,9 @@ export interface TailTradeRow {
   wallet_exact_pnl_usd: number | null;
   wallet_exact_pnl_pct: number | null;
   closed_manually: 0 | 1;
+  is_live: 0 | 1;
+  own_entry_tx_signature: string | null;
+  own_exit_tx_signature: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -134,33 +140,35 @@ export interface OpenTailEntryInput {
   walletEntryOnchainAt: string;
   entryDetectedAt: string;
   entryDetectionLatencyMs: number;
+  isLive?: boolean;
 }
 
-/** Inserts the row immediately on detection, before the delayed sim fill is known -- status/quantity/sim fields are filled in by recordEntryFill once the simulated delay elapses. */
+/** Inserts the row immediately on detection, before the delayed sim fill (paper) or the swap result (live) is known -- status/quantity/fill fields are filled in by recordEntryFill once that resolves. */
 export function insertPendingTailEntry(input: OpenTailEntryInput): number {
   const result = getDb()
     .prepare(
       `INSERT INTO tail_trades (
         wallet_address, token_address, token_symbol, status, usd_size,
         wallet_entry_price_usd, wallet_entry_tx_signature, wallet_entry_onchain_at,
-        entry_detected_at, entry_detection_latency_ms
+        entry_detected_at, entry_detection_latency_ms, is_live
       ) VALUES (
         @walletAddress, @tokenAddress, @tokenSymbol, 'open', @usdSize,
         @walletEntryPriceUsd, @walletEntryTxSignature, @walletEntryOnchainAt,
-        @entryDetectedAt, @entryDetectionLatencyMs
+        @entryDetectedAt, @entryDetectionLatencyMs, @isLive
       )`,
     )
-    .run(input);
+    .run({ ...input, isLive: input.isLive ? 1 : 0 });
   return Number(result.lastInsertRowid);
 }
 
 export interface EntryFillResult {
   tradeId: number;
   simEntryFillAt: string;
-  simEntryFillPriceUsd: number;
-  entryLiquidityUsd: number;
+  simEntryFillPriceUsd: number; // the fill price -- real (live) or simulated (paper); same column either way, see is_live
+  entryLiquidityUsd: number | undefined; // undefined for a live fill whose best-effort liquidity lookup failed -- the swap itself already succeeded, this is just display context
   entryMarketCapUsd: number | undefined;
   quantity: number;
+  ownEntryTxSignature?: string; // live only -- this bot's own buy tx signature
 }
 
 export function recordEntryFill(input: EntryFillResult): void {
@@ -175,10 +183,17 @@ export function recordEntryFill(input: EntryFillResult): void {
         sim_entry_fill_at = @simEntryFillAt, sim_entry_fill_price_usd = @simEntryFillPriceUsd,
         entry_liquidity_usd = @entryLiquidityUsd, entry_market_cap_usd = @entryMarketCapUsd,
         entry_slippage_vs_wallet_pct = @entrySlippageVsWalletPct,
+        own_entry_tx_signature = COALESCE(@ownEntryTxSignature, own_entry_tx_signature),
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id = @tradeId`,
     )
-    .run({ ...input, entryMarketCapUsd: input.entryMarketCapUsd ?? null, entrySlippageVsWalletPct });
+    .run({
+      ...input,
+      entryLiquidityUsd: input.entryLiquidityUsd ?? null,
+      entryMarketCapUsd: input.entryMarketCapUsd ?? null,
+      entrySlippageVsWalletPct,
+      ownEntryTxSignature: input.ownEntryTxSignature ?? null,
+    });
 }
 
 export function markEntryUnfillable(tradeId: number): void {
@@ -226,9 +241,10 @@ export function recordExitDetection(input: RecordExitDetectionInput): void {
 export interface ExitFillResult {
   tradeId: number;
   simExitFillAt: string;
-  simExitFillPriceUsd: number;
-  exitLiquidityUsd: number;
+  simExitFillPriceUsd: number; // the fill price -- real (live) or simulated (paper); same column either way
+  exitLiquidityUsd: number | undefined; // undefined for a live fill whose best-effort liquidity lookup failed
   exitMarketCapUsd: number | undefined;
+  ownExitTxSignature?: string; // live only -- this bot's own sell tx signature
 }
 
 /** Closes the trade fully: computes both the realistic simulated P&L and the "if filled at the wallet's exact price/time" comparison P&L, from the same quantity basis. */
@@ -252,13 +268,16 @@ export function recordExitFill(input: ExitFillResult): void {
         exit_slippage_vs_wallet_pct = @exitSlippageVsWalletPct,
         pnl_usd = @pnlUsd, pnl_pct = @pnlPct,
         wallet_exact_pnl_usd = @walletExactPnlUsd, wallet_exact_pnl_pct = @walletExactPnlPct,
+        own_exit_tx_signature = COALESCE(@ownExitTxSignature, own_exit_tx_signature),
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id = @tradeId`,
     )
     .run({
       ...input,
+      exitLiquidityUsd: input.exitLiquidityUsd ?? null,
       exitMarketCapUsd: input.exitMarketCapUsd ?? null,
       exitSlippageVsWalletPct,
+      ownExitTxSignature: input.ownExitTxSignature ?? null,
       pnlUsd,
       pnlPct,
       walletExactPnlUsd,
@@ -271,18 +290,18 @@ export interface ManualCloseResult {
   exitPriceUsd: number;
   exitLiquidityUsd: number | null;
   exitMarketCapUsd: number | null;
+  ownExitTxSignature?: string; // live only -- this bot's own sell tx signature
 }
 
 /**
- * Closes an open position from the dashboard's manual Sell button, at a
- * live price looked up on click -- for exits this bot has no other way to
- * detect (e.g. standing in for scraping pump.fun "callouts"). Unlike
- * recordExitFill, there's no wallet sell event backing this: only
- * pnl_usd / pnl_pct (this app's own simulated result) get computed; the
- * wallet_exit_ and wallet_exact_pnl_ columns are left NULL since there's
- * nothing to compare against. closed_manually = 1 marks the row so the
- * dashboard and any P&L analysis can tell these apart from wallet-mirrored
- * exits.
+ * Closes an open position from the dashboard's manual Sell button -- for a
+ * paper trade, at a fresh price lookup; for a live trade (trade.is_live), at
+ * the real fill price from an actual swap (see src/tail/liveExecution.ts).
+ * Either way there's no wallet sell event backing this: only pnl_usd /
+ * pnl_pct (this app's own result) get computed; the wallet_exit_ and
+ * wallet_exact_pnl_ columns are left NULL since there's nothing to compare
+ * against. closed_manually = 1 marks the row so the dashboard and any P&L
+ * analysis can tell these apart from wallet-mirrored exits.
  */
 export function closeTailTradeManually(input: ManualCloseResult): void {
   const trade = getTailTradeById(input.tradeId)!;
@@ -297,10 +316,11 @@ export function closeTailTradeManually(input: ManualCloseResult): void {
         sim_exit_fill_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), sim_exit_fill_price_usd = @exitPriceUsd,
         exit_liquidity_usd = @exitLiquidityUsd, exit_market_cap_usd = @exitMarketCapUsd,
         pnl_usd = @pnlUsd, pnl_pct = @pnlPct,
+        own_exit_tx_signature = COALESCE(@ownExitTxSignature, own_exit_tx_signature),
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id = @tradeId`,
     )
-    .run({ ...input, pnlUsd, pnlPct });
+    .run({ ...input, ownExitTxSignature: input.ownExitTxSignature ?? null, pnlUsd, pnlPct });
 }
 
 export function markExitUnfillable(tradeId: number): void {
@@ -399,4 +419,26 @@ export function getRecentTailCoverageGaps(limit = 50): TailCoverageGapRow[] {
   return getDb()
     .prepare(`SELECT * FROM tail_coverage_gaps ORDER BY detected_at DESC LIMIT ?`)
     .all(limit) as TailCoverageGapRow[];
+}
+
+// ---- tail_live_daily_state (live-trading daily loss cap) ----
+
+export interface TailLiveDailySnapshot {
+  snapshotDate: string | null; // UTC 'YYYY-MM-DD', null if never snapshotted
+  snapshotBalanceUsd: number | null;
+}
+
+export function getTailLiveDailySnapshot(): TailLiveDailySnapshot {
+  const row = getDb()
+    .prepare(`SELECT snapshot_date, snapshot_balance_usd FROM tail_live_daily_state WHERE id = 1`)
+    .get() as { snapshot_date: string | null; snapshot_balance_usd: number | null };
+  return { snapshotDate: row.snapshot_date, snapshotBalanceUsd: row.snapshot_balance_usd };
+}
+
+export function setTailLiveDailySnapshot(snapshotDate: string, snapshotBalanceUsd: number): void {
+  getDb()
+    .prepare(
+      `UPDATE tail_live_daily_state SET snapshot_date = ?, snapshot_balance_usd = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = 1`,
+    )
+    .run(snapshotDate, snapshotBalanceUsd);
 }

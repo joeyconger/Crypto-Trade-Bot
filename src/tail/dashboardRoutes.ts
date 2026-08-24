@@ -15,6 +15,7 @@ import {
 import { computeTailSummary } from "./summary.js";
 import { getTokenOverview } from "../data/priceProvider.js";
 import { addAddressToWebhook, removeAddressFromWebhook } from "../data/heliusWebhook.js";
+import { executeLiveSell } from "./liveExecution.js";
 
 // Solana addresses are base58 (no 0/O/I/l), typically 32-44 chars. Not a
 // full validity check (doesn't confirm the account exists or is even a
@@ -91,6 +92,12 @@ export function createTailDashboardRouter(config: TailConfig): Router {
       // Whether adding/removing a wallet in the dashboard will also update
       // the Helius webhook automatically, or just this app's own DB.
       heliusSyncConfigured: !!config.heliusWebhookId,
+      // REAL funds, REAL swaps, the instant a tailed wallet trades -- see
+      // README's "Going live" subsection. The dashboard should make this
+      // loud, not a subtle badge.
+      liveTradingEnabled: config.liveTradingEnabled,
+      liveSlippageBps: config.liveSlippageBps,
+      liveDailyLossLimitPct: config.liveDailyLossLimitPct,
     });
   });
 
@@ -161,12 +168,15 @@ export function createTailDashboardRouter(config: TailConfig): Router {
   });
 
   /**
-   * Manually closes an open tail_trade at a freshly-looked-up current
-   * price -- a substitute exit signal for cases with no reliable automated
-   * one (e.g. this app has no pump.fun "callout" scraper), so a position
-   * doesn't just sit open forever waiting for a wallet sell that may not be
-   * detectable. Marked closed_manually so it's distinguishable from a
-   * wallet-mirrored exit everywhere the dashboard/summary reads trades.
+   * Manually closes an open tail_trade -- a substitute exit signal for
+   * cases with no reliable automated one (e.g. this app has no pump.fun
+   * "callout" scraper), so a position doesn't just sit open forever waiting
+   * for a wallet sell that may not be detectable. For a live position
+   * (trade.is_live) this is a REAL swap of the actual held quantity
+   * (read fresh from the chain, not the DB's recorded quantity, in case of
+   * drift); for a paper position it's a fresh price lookup, same as always.
+   * Marked closed_manually so it's distinguishable from a wallet-mirrored
+   * exit everywhere the dashboard/summary reads trades.
    */
   router.post("/trades/:id/sell", async (req, res) => {
     const tradeId = Number(req.params.id);
@@ -177,6 +187,23 @@ export function createTailDashboardRouter(config: TailConfig): Router {
     }
     if (trade.status !== "open") {
       res.status(400).json({ error: `trade is already ${trade.status.replace("_", " ")}, nothing to sell` });
+      return;
+    }
+
+    if (trade.is_live) {
+      const result = await executeLiveSell(trade.token_address);
+      if (!result.ok) {
+        res.status(502).json({ error: result.reason });
+        return;
+      }
+      closeTailTradeManually({
+        tradeId,
+        exitPriceUsd: result.fillPriceUsd,
+        exitLiquidityUsd: null,
+        exitMarketCapUsd: null,
+        ownExitTxSignature: result.signature,
+      });
+      res.json({ ok: true, exitPriceUsd: result.fillPriceUsd, signature: result.signature });
       return;
     }
 
