@@ -68,10 +68,27 @@ export async function handleParsedBuy(
   const walletEntryPriceUsd = (swap.quoteAmount * quote.priceUsd) / swap.tokenAmount;
   // Live sizing is a % of the wallet's REAL current balance; paper sizing is
   // a % of the fictional TAIL_STARTING_BALANCE_USD -- these are deliberately
-  // different bases, not interchangeable.
-  const usdSize = config.liveTradingEnabled
-    ? ((await getBotWalletBalanceUsd()) * config.positionSizePct) / 100
-    : (config.startingBalanceUsd * config.positionSizePct) / 100;
+  // different bases, not interchangeable. This runs before any DB row
+  // exists, so a failure here (e.g. the price provider rate-limited) needs
+  // its own clean log entry rather than throwing uncaught into webhook.ts's
+  // generic handler_error coverage-gap catch, which would silently drop a
+  // real buy signal with a vague error instead of a wallet-attributed one.
+  let usdSize: number;
+  if (config.liveTradingEnabled) {
+    try {
+      usdSize = ((await getBotWalletBalanceUsd()) * config.positionSizePct) / 100;
+    } catch (err) {
+      insertTailWebhookLog(
+        walletAddress,
+        swap.txSignature,
+        "parse_error",
+        `detected a live buy but couldn't read the wallet's balance to size it: ${err instanceof Error ? err.message : String(err)} -- trade not recorded`,
+      );
+      return;
+    }
+  } else {
+    usdSize = (config.startingBalanceUsd * config.positionSizePct) / 100;
+  }
   const entryDetectionLatencyMs = detectedAt.getTime() - new Date(swap.onchainAt).getTime();
 
   const tradeId = insertPendingTailEntry({

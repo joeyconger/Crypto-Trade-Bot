@@ -60,19 +60,27 @@ export type LiveBuyResult =
  * outAmount estimate, so it's correct regardless of slippage.
  */
 export async function executeLiveBuy(tokenAddress: string, usdSize: number): Promise<LiveBuyResult> {
-  const capCheck = await checkDailyLossCapOk();
-  if (!capCheck.ok) return { ok: false, reason: capCheck.reason };
-
-  const [solBalance, solOverview] = await Promise.all([getBotSolBalance(), getTokenOverview(SOL_MINT)]);
-  const solAmount = usdSize / solOverview.price;
-  if (solAmount + FEE_RESERVE_SOL > solBalance) {
-    return {
-      ok: false,
-      reason: `insufficient SOL balance: need ~${solAmount.toFixed(4)} + ${FEE_RESERVE_SOL} fee reserve, have ${solBalance.toFixed(4)}`,
-    };
-  }
-
+  // Everything below is wrapped in one try/catch, not just the swap itself
+  // -- by the time this is called, mirror.ts has already inserted a
+  // 'pending' tail_trades row, and the only thing that marks it
+  // unfillable_entry is a clean {ok:false} return here. A rate-limit or
+  // network failure from the daily-loss-cap check or the balance/price
+  // lookups (both hit the price provider, same as the swap) throwing
+  // uncaught instead would leave that row stuck open with no quantity
+  // forever -- a real bug found from a live GeckoTerminal 429.
   try {
+    const capCheck = await checkDailyLossCapOk();
+    if (!capCheck.ok) return { ok: false, reason: capCheck.reason };
+
+    const [solBalance, solOverview] = await Promise.all([getBotSolBalance(), getTokenOverview(SOL_MINT)]);
+    const solAmount = usdSize / solOverview.price;
+    if (solAmount + FEE_RESERVE_SOL > solBalance) {
+      return {
+        ok: false,
+        reason: `insufficient SOL balance: need ~${solAmount.toFixed(4)} + ${FEE_RESERVE_SOL} fee reserve, have ${solBalance.toFixed(4)}`,
+      };
+    }
+
     const before = await getTokenBalanceRaw(tokenAddress);
     const result = await swapSolForToken(tokenAddress, solAmount, env.TAIL_LIVE_SLIPPAGE_BPS);
     const after = await getTokenBalanceRaw(tokenAddress);
