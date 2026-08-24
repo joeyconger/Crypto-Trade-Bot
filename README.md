@@ -79,7 +79,7 @@ remove tailed wallets, watch trade history and per-wallet P&L, and (if
 |---|---|---|
 | `HELIUS_API_KEY` | RPC (also doubles as the default `SOLANA_RPC_URL`) + `wallet-cluster`'s transaction-history lookups | [helius.dev](https://helius.dev) -- free tier is enough for one bot |
 | `BIRDEYE_API_KEY` | Current price/market cap -- only if `PRICE_PROVIDER=birdeye` | [birdeye.so/find-more](https://birdeye.so/find-more) -- free Standard tier |
-| `GECKOTERMINAL_API_KEY` | Optional but strongly recommended if `PRICE_PROVIDER=geckoterminal` (the default) | [coingecko.com/en/api/pricing](https://www.coingecko.com/en/api/pricing) -- the free "Demo" tier, not a paid plan |
+| `GECKOTERMINAL_API_KEY` | **Required** if `PRICE_PROVIDER=geckoterminal` (the default) -- without it every price lookup 401s | [coingecko.com/en/api/pricing](https://www.coingecko.com/en/api/pricing) -- the free "Demo" tier, not a paid plan |
 | `BOT_PRIVATE_KEY` | Tail live trading only | Run `npm run generate-keypair` yourself -- see [Wallet tail: going live](#going-live) |
 
 Everything else in `.env.example` has a sane default (dashboard port, DB
@@ -95,15 +95,15 @@ module imports through it, never a specific provider directly):
   `BIRDEYE_API_KEY` and a metered plan (the free Standard tier has a
   monthly call cap). Once that cap is hit, Birdeye stops serving requests
   for the rest of the billing period.
-- **`geckoterminal`** (default) -- GeckoTerminal's public API. Works with
-  zero setup so a fresh deploy runs immediately even with Birdeye's quota
-  exhausted, but **set `GECKOTERMINAL_API_KEY` to a free CoinGecko "Demo"
-  key** the first chance you get: a fully anonymous request shares its rate
-  limit with every other unauthenticated caller hitting GeckoTerminal
-  worldwide, not just this bot, which is a much worse ceiling in practice
-  than a per-key allowance. The Demo key is free (no card, no paid plan --
-  don't confuse it with the "Pro"/"Analyst" tiers the 429 error message
-  itself points at), sent via the `x-cg-demo-api-key` header. Even with a
+- **`geckoterminal`** (default) -- GeckoTerminal's on-chain data via
+  CoinGecko's keyed `api.coingecko.com/api/v3/onchain` host. **`GECKOTERMINAL_API_KEY`
+  is required, not optional** -- this host rejects every request with a 401
+  if it's unset (unlike the old public `api.geckoterminal.com/api/v2` host,
+  which worked anonymously, just rate-limited; that host also silently
+  ignores API key headers entirely, which is why switching to the keyed host
+  was necessary in the first place). The Demo key is free (no card, no paid
+  plan -- don't confuse it with the "Pro"/"Analyst" tiers some error
+  messages point at), sent via the `x-cg-demo-api-key` header. Even with a
   key, this provider has a couple of other tradeoffs vs. Birdeye: its
   endpoint is scoped to a liquidity pool rather than a token mint directly
   -- `src/data/geckoterminal.ts` resolves and caches each token's primary

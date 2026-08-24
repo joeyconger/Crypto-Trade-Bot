@@ -16,16 +16,15 @@ const envSchema = z.object({
   HELIUS_API_KEY: z.string().optional(),
   BIRDEYE_API_KEY: z.string().optional(),
 
-  // "geckoterminal" needs no API key (free public API) -- default here so a
-  // fresh deploy works even with Birdeye's quota exhausted. Switch back to
-  // "birdeye" once your plan resets/upgrades -- see README's data provider
-  // section for the tradeoffs (GeckoTerminal's free tier has a tighter
-  // rate limit and a couple of endpoints are best-effort/unverified).
+  // Switch to "birdeye" if your Birdeye plan is active -- see README's data
+  // provider section for the tradeoffs.
   PRICE_PROVIDER: z.enum(["birdeye", "geckoterminal"]).default("geckoterminal"),
-  // Optional but strongly recommended when PRICE_PROVIDER=geckoterminal: a
-  // free CoinGecko "Demo" key (no cost) gets a dedicated rate-limit
-  // allowance instead of sharing the anonymous pool with every other
-  // unauthenticated caller. See data/geckoterminal.ts.
+  // REQUIRED when PRICE_PROVIDER=geckoterminal (the default) -- data/geckoterminal.ts
+  // calls CoinGecko's keyed api.coingecko.com/api/v3/onchain host, which
+  // rejects every request with a 401 if this is unset (confirmed live: it
+  // does not fall back to a slower anonymous tier the way the old
+  // api.geckoterminal.com/api/v2 host used to). A free CoinGecko "Demo" key,
+  // no cost, no card -- coingecko.com/en/api/pricing. See data/geckoterminal.ts.
   GECKOTERMINAL_API_KEY: z.string().optional(),
 
   DATABASE_PATH: z.string().default("./data/bot.sqlite"),
@@ -116,6 +115,17 @@ function loadEnv(): Env {
   if (data.TAIL_LIVE_TRADING && data.TAIL_LIVE_TRADING_CONFIRM && !data.BOT_PRIVATE_KEY) {
     console.error("TAIL_LIVE_TRADING is enabled but BOT_PRIVATE_KEY is not set -- refusing to start.");
     process.exit(1);
+  }
+  // Not fail-fast (unlike the BOT_PRIVATE_KEY check above) since this
+  // doesn't block startup -- but every single price/OHLCV lookup will 401
+  // until this is set (see GECKOTERMINAL_API_KEY's comment above), including
+  // ones that silently break live position sizing and paper fills, so this
+  // needs to be impossible to miss in the logs.
+  if (data.PRICE_PROVIDER === "geckoterminal" && !data.GECKOTERMINAL_API_KEY) {
+    console.error(
+      "*** WARNING: PRICE_PROVIDER=geckoterminal but GECKOTERMINAL_API_KEY is not set -- " +
+        "every price/OHLCV lookup will fail with a 401. Get a free key at coingecko.com/en/api/pricing. ***",
+    );
   }
   const tailLiveTradingEnabled = data.TAIL_LIVE_TRADING === true && data.TAIL_LIVE_TRADING_CONFIRM === true;
 
