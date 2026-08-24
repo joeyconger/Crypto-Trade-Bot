@@ -11,6 +11,7 @@ import {
   getTailTradeById,
   closeTailTradeManually,
   type TailTradeRow,
+  type TailWebhookLogStatus,
 } from "./db.js";
 import { computeTailSummary } from "./summary.js";
 import { getTokenOverview } from "../data/priceProvider.js";
@@ -250,7 +251,8 @@ export function createTailDashboardRouter(config: TailConfig): Router {
 
   router.get("/webhook-log", (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 100, 500);
-    res.json(getRecentTailWebhookLog(limit));
+    const status = req.query.status ? (String(req.query.status) as TailWebhookLogStatus) : undefined;
+    res.json(getRecentTailWebhookLog(limit, status));
   });
 
   router.get("/coverage-gaps", (req, res) => {

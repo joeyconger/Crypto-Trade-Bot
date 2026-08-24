@@ -385,7 +385,12 @@ export interface TailWebhookLogRow {
   detail: string | null;
 }
 
-export function getRecentTailWebhookLog(limit = 100): TailWebhookLogRow[] {
+export function getRecentTailWebhookLog(limit = 100, status?: TailWebhookLogStatus): TailWebhookLogRow[] {
+  if (status) {
+    return getDb()
+      .prepare(`SELECT * FROM tail_webhook_log WHERE status = ? ORDER BY received_at DESC LIMIT ?`)
+      .all(status, limit) as TailWebhookLogRow[];
+  }
   return getDb()
     .prepare(`SELECT * FROM tail_webhook_log ORDER BY received_at DESC LIMIT ?`)
     .all(limit) as TailWebhookLogRow[];
