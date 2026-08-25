@@ -1,6 +1,15 @@
 import { env } from "../config/env.js";
+import { createKeyedSerializer } from "../utils/async.js";
 
 const BASE_URL = "https://api.helius.xyz/v0";
+
+// Keyed by webhookId -- addAddressToWebhook/removeAddressFromWebhook each
+// do a read-then-full-replace against Helius's webhook config with no
+// server-side locking, so two near-simultaneous calls for the SAME webhook
+// could otherwise both read the same pre-update address list and the
+// second PUT would silently overwrite the first's change. Serializing the
+// whole read-modify-write per webhookId closes that race.
+const serializeWebhookUpdate = createKeyedSerializer<string>();
 
 /**
  * Shape of Helius's webhook object, per their public docs. Unverified from
@@ -63,19 +72,23 @@ export async function updateWebhookAddresses(webhookId: string, accountAddresses
  * already present, no-op).
  */
 export async function addAddressToWebhook(webhookId: string, address: string): Promise<boolean> {
-  const current = await getWebhook(webhookId);
-  if (current.accountAddresses.includes(address)) return false;
-  await updateWebhookAddresses(webhookId, [...current.accountAddresses, address]);
-  return true;
+  return serializeWebhookUpdate(webhookId, async () => {
+    const current = await getWebhook(webhookId);
+    if (current.accountAddresses.includes(address)) return false;
+    await updateWebhookAddresses(webhookId, [...current.accountAddresses, address]);
+    return true;
+  });
 }
 
 /** Removes a single address from the configured webhook's watch list, if present. Returns whether a call was actually needed. */
 export async function removeAddressFromWebhook(webhookId: string, address: string): Promise<boolean> {
-  const current = await getWebhook(webhookId);
-  if (!current.accountAddresses.includes(address)) return false;
-  await updateWebhookAddresses(
-    webhookId,
-    current.accountAddresses.filter((a) => a !== address),
-  );
-  return true;
+  return serializeWebhookUpdate(webhookId, async () => {
+    const current = await getWebhook(webhookId);
+    if (!current.accountAddresses.includes(address)) return false;
+    await updateWebhookAddresses(
+      webhookId,
+      current.accountAddresses.filter((a) => a !== address),
+    );
+    return true;
+  });
 }

@@ -1,12 +1,9 @@
 import { getRecentTransactions } from "../data/helius.js";
 import { parseSwapForWallet } from "../tail/parseSwap.js";
+import { sleep } from "../utils/async.js";
 
 const MAX_PAGES = 20;
 const PAGE_SIZE = 100;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export interface WalletTokenTrade {
   sellAt: string | null; // earliest sell strictly after sinceBuyAt, if any

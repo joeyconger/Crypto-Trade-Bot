@@ -93,8 +93,44 @@ export function initTailSchema(): void {
   `);
 
   applyConcurrencyBugCorrections(db);
+  ensureActivePositionUniqueIndex(db);
 
   initialized = true;
+}
+
+/**
+ * DB-level guard against opening two active positions for the same
+ * wallet+token at once -- handleParsedBuy's application-level dedup check
+ * (getActiveOrPendingTailTrade) runs before several awaited network calls
+ * (price lookup, wallet balance, symbol resolution), so two genuinely
+ * rapid buys of the same token can both pass that check before either
+ * insert lands, opening two live positions and double the intended
+ * capital. A partial unique index makes the actual INSERT atomic instead:
+ * SQLite itself rejects the second insert the instant it would violate
+ * uniqueness, no race window possible. Only 'pending'/'open' rows are
+ * covered by the WHERE clause -- a closed/unfillable row for the same
+ * wallet+token must never block reopening that token later.
+ *
+ * Guarded in a try/catch (like the ADD COLUMN migrations above) because
+ * creating this against an existing database that already has duplicate
+ * active rows for some wallet+token (e.g. from this exact race, before
+ * this fix) would otherwise throw and prevent startup entirely -- better
+ * to log loudly that the constraint couldn't be applied than crash the
+ * whole app over pre-existing data it can't safely resolve on its own.
+ */
+function ensureActivePositionUniqueIndex(db: Database.Database): void {
+  try {
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_tail_trades_active_position ON tail_trades (wallet_address, token_address) WHERE status IN ('pending', 'open')`,
+    );
+  } catch (err) {
+    console.error(
+      "WARNING: could not create idx_tail_trades_active_position (the DB likely already has more than one " +
+        "pending/open tail_trades row for the same wallet+token) -- the duplicate-buy race this index exists to " +
+        "close at the DB level is NOT closed until that's resolved manually:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 /**
@@ -256,21 +292,38 @@ export interface OpenTailEntryInput {
 }
 
 /** Inserts the row immediately on detection, before the delayed sim fill (paper) or the swap result (live) is known -- status starts 'pending' (not yet a real/sellable position) until recordEntryFill or markEntryUnfillable resolves it. */
-export function insertPendingTailEntry(input: OpenTailEntryInput): number {
-  const result = getDb()
-    .prepare(
-      `INSERT INTO tail_trades (
-        wallet_address, token_address, token_symbol, status, usd_size,
-        wallet_entry_price_usd, wallet_entry_tx_signature, wallet_entry_onchain_at,
-        entry_detected_at, entry_detection_latency_ms, is_live
-      ) VALUES (
-        @walletAddress, @tokenAddress, @tokenSymbol, 'pending', @usdSize,
-        @walletEntryPriceUsd, @walletEntryTxSignature, @walletEntryOnchainAt,
-        @entryDetectedAt, @entryDetectionLatencyMs, @isLive
-      )`,
-    )
-    .run({ ...input, isLive: input.isLive ? 1 : 0 });
-  return Number(result.lastInsertRowid);
+/**
+ * Returns null (instead of throwing) when this insert would violate
+ * idx_tail_trades_active_position (a concurrent buy already opened/is
+ * opening a pending/open position for this exact wallet+token -- the
+ * TOCTOU race handleParsedBuy's earlier application-level check can't
+ * fully close on its own, see that index's docstring) or
+ * wallet_entry_tx_signature's UNIQUE constraint (a duplicate webhook
+ * delivery of the same buy). Both are expected, recoverable outcomes the
+ * caller should log cleanly, not crash into webhook.ts's generic
+ * handler_error coverage-gap catch over.
+ */
+export function insertPendingTailEntry(input: OpenTailEntryInput): number | null {
+  try {
+    const result = getDb()
+      .prepare(
+        `INSERT INTO tail_trades (
+          wallet_address, token_address, token_symbol, status, usd_size,
+          wallet_entry_price_usd, wallet_entry_tx_signature, wallet_entry_onchain_at,
+          entry_detected_at, entry_detection_latency_ms, is_live
+        ) VALUES (
+          @walletAddress, @tokenAddress, @tokenSymbol, 'pending', @usdSize,
+          @walletEntryPriceUsd, @walletEntryTxSignature, @walletEntryOnchainAt,
+          @entryDetectedAt, @entryDetectionLatencyMs, @isLive
+        )`,
+      )
+      .run({ ...input, isLive: input.isLive ? 1 : 0 });
+    return Number(result.lastInsertRowid);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("UNIQUE constraint failed")) return null;
+    throw err;
+  }
 }
 
 export interface EntryFillResult {
@@ -517,13 +570,31 @@ export function updateTailTradeSymbol(tradeId: number, symbol: string): void {
     .run(symbol, tradeId);
 }
 
-export function getAllTailTrades(walletAddress?: string, limit = 500): TailTradeRow[] {
+/**
+ * `status`, when given, filters BEFORE `limit` is applied (a WHERE clause
+ * in the query, not a client-side filter after the fact) -- critical for
+ * the dashboard's Open Positions view: without a server-side status
+ * filter, "most recent N trades of any status" can push an older
+ * still-open live position out of the page entirely once enough newer
+ * closed/unfillable/pending trades accumulate, silently hiding a real held
+ * position (and its Sell button) with no indication anything is missing.
+ */
+export function getAllTailTrades(walletAddress?: string, limit = 500, status?: TailTradeRow["status"]): TailTradeRow[] {
+  const conditions: string[] = [];
+  const params: (string | number)[] = [];
   if (walletAddress) {
-    return getDb()
-      .prepare(`SELECT * FROM tail_trades WHERE wallet_address = ? ORDER BY created_at DESC LIMIT ?`)
-      .all(walletAddress, limit) as TailTradeRow[];
+    conditions.push("wallet_address = ?");
+    params.push(walletAddress);
   }
-  return getDb().prepare(`SELECT * FROM tail_trades ORDER BY created_at DESC LIMIT ?`).all(limit) as TailTradeRow[];
+  if (status) {
+    conditions.push("status = ?");
+    params.push(status);
+  }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  params.push(limit);
+  return getDb()
+    .prepare(`SELECT * FROM tail_trades ${where} ORDER BY created_at DESC LIMIT ?`)
+    .all(...params) as TailTradeRow[];
 }
 
 export function getTailTradesSince(sinceIso: string): TailTradeRow[] {

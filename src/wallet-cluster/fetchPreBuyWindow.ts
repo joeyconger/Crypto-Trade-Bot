@@ -1,10 +1,7 @@
 import { getRecentTransactions } from "../data/helius.js";
 import { parseSwapForWallet } from "../tail/parseSwap.js";
 import type { EarlyBuyer } from "./types.js";
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+import { sleep } from "../utils/async.js";
 
 // Bounded, but generously so -- unlike other paginated loops in this
 // codebase, this one may need to page through a lot of MORE RECENT activity

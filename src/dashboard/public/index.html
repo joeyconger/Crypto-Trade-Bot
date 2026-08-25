@@ -652,7 +652,14 @@
   }
 
   let tailModuleAvailable = null; // null = unknown yet, true/false once checked
-  let tailTradesCache = []; // last-fetched trades, re-rendered on tab switch without a fresh fetch
+  let tailTradesCache = []; // last-fetched RECENT trades (any status, capped at 100) -- Closed/Unfilled/All tabs
+  // Open Positions needs its own server-filtered fetch (?status=open), not
+  // a client-side filter of tailTradesCache's recency-limited page -- an
+  // older still-open position can otherwise fall out of the top-100-by-
+  // recency window once enough newer trades of any status accumulate,
+  // silently hiding a real held position with no indication anything's
+  // missing. See dashboardRoutes.ts's /trades status param.
+  let tailOpenPositionsCache = [];
   let tailLabelForCache = (address) => address; // last-built labelFor closure, reused by renderTailTradesTable
   let tailTradesFilter = "open"; // "open" | "closed" | "unfillable" | "all"
 
@@ -741,7 +748,7 @@
    * current price instead of an exit price.
    */
   function renderTailOpenPositionsTable() {
-    const trades = tailTradesCache.filter((t) => t.status === "open");
+    const trades = tailOpenPositionsCache;
     const labelFor = tailLabelForCache;
 
     document.getElementById("tailOpenPositionsEmpty").style.display = trades.length ? "none" : "block";
@@ -853,9 +860,10 @@
         `).join("")
         : `<span class="research-note" style="margin:0">No wallets tailed yet -- add one below.</span>`;
 
-      const [summaryResp, trades] = await Promise.all([
+      const [summaryResp, trades, openTrades] = await Promise.all([
         fetchJson("/api/tail/summary"),
         fetchJson("/api/tail/trades?limit=100"),
+        fetchJson("/api/tail/trades?status=open&limit=500"),
       ]);
       const summary = summaryResp.overall;
       const walletLabels = status.walletLabels || {};
@@ -869,7 +877,8 @@
 
       document.getElementById("tailKpiWinRate").textContent = summary.winRate == null ? "—" : summary.winRate.toFixed(1) + "%";
       document.getElementById("tailKpiTradeCount").textContent =
-        `${summary.tradeCount} closed · ${summary.openCount} open · ${summary.unfillableEntryCount + summary.unfillableExitCount} unfillable`;
+        `${summary.tradeCount} closed · ${summary.openCount} open · ${summary.unfillableEntryCount + summary.unfillableExitCount} unfillable` +
+        (summary.pendingCount > 0 ? ` · ${summary.pendingCount} pending` : "");
 
       document.getElementById("tailKpiLatency").innerHTML = fmtMs(summary.avgEntryDetectionLatencyMs);
       document.getElementById("tailKpiSlippage").innerHTML = summary.avgEntrySlippageVsWalletPct == null ? "&mdash;" : fmtPct(summary.avgEntrySlippageVsWalletPct);
@@ -897,6 +906,7 @@
       }
 
       tailTradesCache = trades;
+      tailOpenPositionsCache = openTrades;
       tailLabelForCache = labelFor;
       renderTailTradesTable();
     } catch (err) {

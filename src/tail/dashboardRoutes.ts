@@ -142,11 +142,15 @@ export function createTailDashboardRouter(config: TailConfig): Router {
    * webhook too. Any position still `open` for this wallet will never see
    * its matching sell once Helius stops forwarding this wallet's
    * transactions, so the response includes how many would be stranded --
-   * the dashboard should surface that before the user confirms.
+   * the dashboard should surface that before the user confirms. Also
+   * counts `pending` rows (a buy still mid-fill at the exact moment of
+   * removal) -- those become exactly this same stranded-open situation the
+   * instant their fill lands, just a beat later, so excluding them would
+   * silently under-warn for a race that overlaps the removal itself.
    */
   router.delete("/wallets/:address", async (req, res) => {
     const address = req.params.address;
-    const strandedOpenCount = getAllTailTrades(address, 5000).filter((t) => t.status === "open").length;
+    const strandedOpenCount = getAllTailTrades(address, 5000).filter((t) => t.status === "open" || t.status === "pending").length;
 
     setTailWalletEnabled(address, false);
 
@@ -165,7 +169,8 @@ export function createTailDashboardRouter(config: TailConfig): Router {
 
   router.get("/trades", async (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 100, 1000);
-    const trades = getAllTailTrades(undefined, limit);
+    const status = req.query.status ? (String(req.query.status) as TailTradeRow["status"]) : undefined;
+    const trades = getAllTailTrades(undefined, limit, status);
     res.json(await enrichTradesWithLiveData(trades));
   });
 

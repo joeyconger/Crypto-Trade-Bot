@@ -1,6 +1,7 @@
 import { env } from "../config/env.js";
 import { getCachedPoolAddress, setCachedPoolAddress } from "../db/index.js";
 import type { OhlcvCandle, TokenOverview, TopTradedToken } from "./types.js";
+import { sleep } from "../utils/async.js";
 
 /**
  * GeckoTerminal's on-chain DEX data, accessed through CoinGecko's keyed
@@ -30,10 +31,6 @@ import type { OhlcvCandle, TokenOverview, TopTradedToken } from "./types.js";
 
 const BASE_URL = "https://api.coingecko.com/api/v3/onchain";
 const NETWORK = "solana";
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function headers(): Record<string, string> {
   const base: Record<string, string> = { accept: "application/json" };

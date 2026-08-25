@@ -116,6 +116,21 @@ export async function handleParsedBuy(
     isLive: config.liveTradingEnabled,
   });
 
+  if (tradeId === null) {
+    // Lost the DB-level race idx_tail_trades_active_position exists to
+    // close: a concurrent buy for this same wallet+token (or a duplicate
+    // webhook delivery of this exact tx) won first. No usdSize was ever
+    // spent on THIS attempt -- unlike the losing side of the entry-fill
+    // race (recordEntryFill), there's no real fill to reconcile here.
+    insertTailWebhookLog(
+      walletAddress,
+      swap.txSignature,
+      "ignored_already_open",
+      `couldn't open a new tail_trade for this token -- a concurrent buy (or a duplicate webhook delivery) already claimed it`,
+    );
+    return;
+  }
+
   insertTailWebhookLog(
     walletAddress,
     swap.txSignature,

@@ -2,16 +2,13 @@ import { env } from "../config/env.js";
 import { getTokenOverview } from "../data/priceProvider.js";
 import { getTokenBalanceRaw } from "../solana/tokenAccounts.js";
 import { swapSolForToken, swapTokenForSol, SOL_MINT } from "../execution/jupiter.js";
-import { getBotSolBalance, type BotWalletSnapshot } from "../execution/liveTrading.js";
+import { getBotSolBalance, getBotWalletBalanceUsd, type BotWalletSnapshot } from "../execution/liveTrading.js";
 import { getTailLiveDailySnapshot, setTailLiveDailySnapshot } from "./db.js";
+import { sleep, createSerializer } from "../utils/async.js";
 
 // Reserved so a buy never leaves the wallet unable to afford its own tx fees
 // -- same figure the (now-deleted) main strategy's live execution used.
 const FEE_RESERVE_SOL = 0.01;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /**
  * Serializes every live buy/sell so at most one is ever mid-flight against
@@ -30,15 +27,7 @@ function sleep(ms: number): Promise<void> {
  * every fill measurement exclusive and correct -- correctness matters far
  * more than throughput for a bot trading real funds at this volume.
  */
-let liveExecutionChain: Promise<unknown> = Promise.resolve();
-function serializeLiveExecution<T>(fn: () => Promise<T>): Promise<T> {
-  const result = liveExecutionChain.then(fn, fn);
-  liveExecutionChain = result.then(
-    () => {},
-    () => {},
-  );
-  return result;
-}
+export const serializeLiveExecution = createSerializer();
 
 export function todayUtcDateString(): string {
   return new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD', UTC by construction (toISOString is always UTC)
@@ -101,9 +90,12 @@ export type LiveBuyResult =
  * place), and re-fetching here would triple the price-provider calls this
  * one live buy makes for no benefit. That snapshot can go slightly stale if
  * this call is queued behind another live trade (see serializeLiveExecution
- * below) -- an acceptable tradeoff: the balance/price it's stale against
- * only affects sizing and the fee-reserve check, never the fill price
- * itself, which is still always read fresh at actual execution time.
+ * below) -- acceptable for sizing and the fee-reserve check (worst case: a
+ * slightly off trade size, or an on-chain-enforced insufficient-funds
+ * failure), but NOT acceptable for the daily loss cap, the one safety
+ * backstop with no on-chain enforcement behind it -- see the fresh
+ * getBotWalletBalanceUsd() call this function makes specifically for that
+ * check, instead of reusing this snapshot's totalBalanceUsd.
  */
 export function executeLiveBuy(tokenAddress: string, usdSize: number, wallet: BotWalletSnapshot): Promise<LiveBuyResult> {
   return serializeLiveExecution(() => executeLiveBuyInner(tokenAddress, usdSize, wallet));
@@ -119,7 +111,19 @@ async function executeLiveBuyInner(tokenAddress: string, usdSize: number, wallet
   // uncaught instead would leave that row stuck open with no quantity
   // forever -- a real bug found from a live GeckoTerminal 429.
   try {
-    const capCheck = await checkDailyLossCapOk(wallet.totalBalanceUsd);
+    // Deliberately re-fetched here rather than reusing wallet.totalBalanceUsd
+    // -- that snapshot was taken by the caller BEFORE this call entered
+    // serializeLiveExecution's queue, so if other live trades from the same
+    // burst are ahead of this one in the queue, it can be stale by the time
+    // this actually runs. Sizing/fee-reserve tolerate that staleness fine
+    // (worst case: a slightly off trade size, or an on-chain-enforced
+    // insufficient-funds failure), but the daily loss cap is the one
+    // application-level safety backstop with no on-chain enforcement behind
+    // it -- it must see the balance as of right now, not as of whenever
+    // this buy was first detected, or it can miss losses from trades
+    // earlier in the very burst it exists to catch.
+    const currentBalanceUsd = await getBotWalletBalanceUsd();
+    const capCheck = await checkDailyLossCapOk(currentBalanceUsd);
     if (!capCheck.ok) return { ok: false, reason: capCheck.reason };
 
     const solAmount = usdSize / wallet.solPriceUsd;
@@ -196,11 +200,23 @@ async function executeLiveSellInner(tokenAddress: string): Promise<LiveSellResul
 
     const solBefore = await getBotSolBalance();
     const result = await swapTokenForSol(tokenAddress, balance.amountRaw, env.TAIL_LIVE_SLIPPAGE_BPS);
-    const solAfter = await getBotSolBalance();
 
-    const solReceived = solAfter - solBefore;
+    // Same RPC read-lag retry as executeLiveBuyInner's post-swap balance
+    // check (see its comment) -- a genuinely successful sell misread as
+    // "SOL balance didn't increase" against a lagging RPC node would mark a
+    // fully-closed position (real tokens sold, real SOL received, zero
+    // on-chain token balance left) as unfillable_exit with no way to
+    // retry-sell it, needing the same manual reconciliation as the
+    // concurrency-bug rows already corrected this session.
+    let solReceived = 0;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (attempt > 0) await sleep(400);
+      const solAfter = await getBotSolBalance();
+      solReceived = solAfter - solBefore;
+      if (solReceived > 0) break;
+    }
     if (solReceived <= 0) {
-      return { ok: false, reason: `swap ${result.signature} confirmed but SOL balance didn't increase` };
+      return { ok: false, reason: `swap ${result.signature} confirmed but SOL balance didn't increase (checked 4 times)` };
     }
 
     const solOverview = await getTokenOverview(SOL_MINT);

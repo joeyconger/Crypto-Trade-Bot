@@ -1,4 +1,5 @@
 import { env } from "../config/env.js";
+import { sleep } from "../utils/async.js";
 
 const BASE_URL = "https://api.helius.xyz/v0";
 
@@ -22,10 +23,6 @@ export interface HeliusTransaction {
   feePayer: string;
   tokenTransfers: HeliusTokenTransfer[];
   nativeTransfers: HeliusNativeTransfer[];
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Address-agnostic: works for a token mint (all swaps touching it) or a wallet (its own tx history). */

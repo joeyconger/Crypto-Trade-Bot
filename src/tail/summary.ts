@@ -3,6 +3,7 @@ import type { TailTradeRow } from "./db.js";
 export interface TailSummary {
   tradeCount: number; // closed trades only -- the ones with a realized outcome
   openCount: number;
+  pendingCount: number; // still mid-fill -- neither a real position yet nor a finished trade
   unfillableEntryCount: number;
   unfillableExitCount: number;
   winRate: number | null; // % of closed trades with pnl_usd > 0
@@ -36,6 +37,7 @@ export function computeTailSummary(trades: TailTradeRow[]): TailSummary {
   return {
     tradeCount: closed.length,
     openCount: trades.filter((t) => t.status === "open").length,
+    pendingCount: trades.filter((t) => t.status === "pending").length,
     unfillableEntryCount: trades.filter((t) => t.status === "unfillable_entry").length,
     unfillableExitCount: trades.filter((t) => t.status === "unfillable_exit").length,
     winRate: closed.length > 0 ? (wins.length / closed.length) * 100 : null,

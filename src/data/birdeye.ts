@@ -1,5 +1,6 @@
 import { env } from "../config/env.js";
 import type { OhlcvCandle, TokenOverview, TopTradedToken } from "./types.js";
+import { sleep } from "../utils/async.js";
 
 const BASE_URL = "https://public-api.birdeye.so";
 
@@ -10,10 +11,6 @@ function headers(): Record<string, string> {
     "x-chain": "solana",
     accept: "application/json",
   };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Retries with backoff on 429 -- the free tier's rate limit is easy to hit under bursty lookup patterns. */

@@ -2,13 +2,10 @@ import { getRecentTransactions } from "../data/helius.js";
 import { parseSwapForWallet } from "../tail/parseSwap.js";
 import { resolveTokenSymbol } from "../data/resolveTokenSymbol.js";
 import type { MainWalletTrade } from "./types.js";
+import { sleep } from "../utils/async.js";
 
 const MAX_PAGES = 20;
 const PAGE_SIZE = 100;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /**
  * Auto-detects the main wallet's recent buys (and, where visible in the same

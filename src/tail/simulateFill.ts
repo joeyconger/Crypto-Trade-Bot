@@ -1,8 +1,5 @@
 import { getTokenOverview } from "../data/priceProvider.js";
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+import { sleep } from "../utils/async.js";
 
 export type FillLookup =
   | { ok: true; priceUsd: number; liquidityUsd: number; marketCapUsd: number | undefined }
