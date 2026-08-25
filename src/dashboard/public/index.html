@@ -533,11 +533,28 @@
       </div>
     </div>
     <div class="tab-bar" id="tailTradesTabs">
-      <button type="button" class="active" data-filter="all" onclick="setTailTradesFilter('all')">All trades</button>
-      <button type="button" data-filter="live" onclick="setTailTradesFilter('live')">Live trades</button>
-      <button type="button" data-filter="paper" onclick="setTailTradesFilter('paper')">Paper trades</button>
+      <button type="button" class="active" data-filter="open" onclick="setTailTradesFilter('open')">Open positions</button>
+      <button type="button" data-filter="closed" onclick="setTailTradesFilter('closed')">Closed trades</button>
+      <button type="button" data-filter="unfillable" onclick="setTailTradesFilter('unfillable')">Unfilled</button>
+      <button type="button" data-filter="all" onclick="setTailTradesFilter('all')">All</button>
     </div>
-    <div class="table-wrap">
+
+    <!-- Open positions: a focused "what am I holding right now" view -- just
+         entry vs. current price and live unrealized $/%, not the full
+         detailed table's ~17 columns (those matter for closed-trade
+         analysis, not for a quick glance at open exposure). -->
+    <div class="table-wrap" id="tailOpenPositionsWrap">
+      <table>
+        <thead>
+          <tr><th>Wallet</th><th>Token</th><th>Entry price</th><th>Current price</th><th>Unrealized $</th><th>Unrealized %</th><th>Opened</th><th></th></tr>
+        </thead>
+        <tbody id="tailOpenPositionsBody"></tbody>
+      </table>
+      <div class="empty" id="tailOpenPositionsEmpty" style="display:none">No open positions</div>
+    </div>
+
+    <!-- Closed / Unfilled / All: the full detailed table -->
+    <div class="table-wrap" id="tailTradesWrap" style="display:none">
       <table>
         <thead>
           <tr>
@@ -637,7 +654,7 @@
   let tailModuleAvailable = null; // null = unknown yet, true/false once checked
   let tailTradesCache = []; // last-fetched trades, re-rendered on tab switch without a fresh fetch
   let tailLabelForCache = (address) => address; // last-built labelFor closure, reused by renderTailTradesTable
-  let tailTradesFilter = "all"; // "all" | "live" | "paper"
+  let tailTradesFilter = "open"; // "open" | "closed" | "unfillable" | "all"
 
   function setTailTradesFilter(filter) {
     tailTradesFilter = filter;
@@ -647,15 +664,37 @@
     renderTailTradesTable();
   }
 
+  // "unfillable" bundles unfillable_entry/unfillable_exit AND the brief
+  // 'pending' state (a buy whose fill hasn't landed yet) -- none of those
+  // are a real position or a finished trade, so they don't belong cluttering
+  // the Open or Closed tabs, but they're still worth being able to see.
+  function tailTradeMatchesFilter(t, filter) {
+    if (filter === "all") return true;
+    if (filter === "open") return t.status === "open";
+    if (filter === "closed") return t.status === "closed";
+    if (filter === "unfillable") return t.status === "unfillable_entry" || t.status === "unfillable_exit" || t.status === "pending";
+    return true;
+  }
+
   function renderTailTradesTable() {
-    const trades = tailTradesFilter === "all"
-      ? tailTradesCache
-      : tailTradesCache.filter((t) => (tailTradesFilter === "live" ? t.is_live : !t.is_live));
+    const openWrap = document.getElementById("tailOpenPositionsWrap");
+    const detailWrap = document.getElementById("tailTradesWrap");
+
+    if (tailTradesFilter === "open") {
+      openWrap.style.display = "";
+      detailWrap.style.display = "none";
+      renderTailOpenPositionsTable();
+      return;
+    }
+    openWrap.style.display = "none";
+    detailWrap.style.display = "";
+
+    const trades = tailTradesCache.filter((t) => tailTradeMatchesFilter(t, tailTradesFilter));
     const labelFor = tailLabelForCache;
 
+    const emptyLabel = { closed: "No closed trades yet", unfillable: "No unfilled trades", all: "No mirrored trades yet" }[tailTradesFilter];
     document.getElementById("tailTradesEmpty").style.display = trades.length ? "none" : "block";
-    document.getElementById("tailTradesEmpty").textContent =
-      tailTradesFilter === "all" ? "No mirrored trades yet" : `No ${tailTradesFilter} trades yet`;
+    document.getElementById("tailTradesEmpty").textContent = emptyLabel;
     document.getElementById("tailTradesBody").innerHTML = trades.map((t) => {
       // "now" for an open position (live), the exit-time figure once closed, null otherwise (unfillable).
       const compareMcap = t.status === "open" ? t.currentMarketCapUsd : t.status === "closed" ? t.exit_market_cap_usd : null;
@@ -686,6 +725,44 @@
         <td>${pnlSpan(t.wallet_exact_pnl_usd, t.wallet_exact_pnl_pct)}</td>
         <td>${fmtTime(t.created_at)}</td>
         <td>${t.status === 'open' ? `<button type="button" class="danger" style="padding:2px 10px" onclick="sellTailTrade(${t.id}, this, ${!!t.is_live})">Sell</button>` : ''}</td>
+      </tr>
+    `;
+    }).join("");
+  }
+
+  /**
+   * The "what am I holding right now" view -- entry vs. current price and
+   * live unrealized $/%, computed client-side from the same fields the
+   * detailed table already has (sim_entry_fill_price_usd as the fill basis,
+   * currentPriceUsd from the /trades endpoint's live-price enrichment for
+   * open rows, usd_size as the % denominator) -- same formula shape as the
+   * realized P&L computed server-side once a trade closes, just against the
+   * current price instead of an exit price.
+   */
+  function renderTailOpenPositionsTable() {
+    const trades = tailTradesCache.filter((t) => t.status === "open");
+    const labelFor = tailLabelForCache;
+
+    document.getElementById("tailOpenPositionsEmpty").style.display = trades.length ? "none" : "block";
+    document.getElementById("tailOpenPositionsBody").innerHTML = trades.map((t) => {
+      const entryPrice = t.sim_entry_fill_price_usd;
+      const currentPrice = t.currentPriceUsd;
+      let pnlUsd = null;
+      let pnlPct = null;
+      if (entryPrice != null && currentPrice != null && t.quantity != null) {
+        pnlUsd = (currentPrice - entryPrice) * t.quantity;
+        pnlPct = (pnlUsd / t.usd_size) * 100;
+      }
+      return `
+      <tr>
+        <td class="sym" title="${esc(t.wallet_address)}">${esc(labelFor(t.wallet_address))}</td>
+        <td class="sym"><a href="https://solscan.io/token/${encodeURIComponent(t.token_address)}" target="_blank" rel="noopener" title="${esc(t.token_address)}" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor">${esc(t.token_symbol)}</a>${t.is_live ? ' <span class="pill no">live</span>' : ''}</td>
+        <td>${fmtPrice(entryPrice)}</td>
+        <td>${fmtPrice(currentPrice)}</td>
+        <td>${pnlUsd == null ? "&mdash;" : `<span class="${pnlUsd >= 0 ? 'up' : 'down'}">${fmtUsd(pnlUsd)}</span>`}</td>
+        <td>${pnlPct == null ? "&mdash;" : `<span class="${pnlPct >= 0 ? 'up' : 'down'}">${fmtPct(pnlPct)}</span>`}</td>
+        <td>${fmtTime(t.created_at)}</td>
+        <td><button type="button" class="danger" style="padding:2px 10px" onclick="sellTailTrade(${t.id}, this, ${!!t.is_live})">Sell</button></td>
       </tr>
     `;
     }).join("");
