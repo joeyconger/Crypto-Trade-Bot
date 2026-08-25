@@ -92,7 +92,65 @@ export function initTailSchema(): void {
     WHERE status = 'closed' AND wallet_exit_price_usd IS NOT NULL AND wallet_entry_price_usd IS NOT NULL AND wallet_entry_price_usd != 0
   `);
 
+  applyConcurrencyBugCorrections(db);
+
   initialized = true;
+}
+
+/**
+ * One-time manual correction for specific historical rows corrupted by the
+ * live-execution concurrency bug (see liveExecution.ts's
+ * serializeLiveExecution docstring) -- fixed in code going forward via
+ * serialization, but any row closed BEFORE that fix shipped, during a burst
+ * of concurrent live sells, could have had another trade's real SOL
+ * proceeds bleed into its own before/after balance measurement. Two such
+ * rows were found (both from the same ~12:17:15-12:17:28 UTC 2026-08-25
+ * burst where a tailed wallet closed 6+ positions within seconds) and
+ * confirmed corrupted by checking their own_exit_tx_signature directly on
+ * Solscan for the real SOL received. realFillPriceUsd below is that
+ * verified real number; every other field is recomputed from it using the
+ * same formulas the rest of this file uses, not hardcoded, so it stays
+ * self-consistent with whatever else is stored on the row.
+ *
+ * Keyed by own_exit_tx_signature so this can only ever touch these exact
+ * two rows, in this exact way -- an UPDATE this specific is a permanent
+ * no-op once applied (same inputs produce the same outputs every startup),
+ * so there's no need to track "has this run" separately, same as the
+ * backfill above.
+ */
+function applyConcurrencyBugCorrections(db: Database.Database): void {
+  const corrections: { ownExitTxSignature: string; realFillPriceUsd: number }[] = [
+    // FUNHOUSE (tail_trades id 74): real swap received 0.015037641 SOL ($1.47) for 66,030.11677 tokens.
+    { ownExitTxSignature: "2xQhNt53aGdbqTzpbsWQUqtZDppsSiFCvzVspk8gUBC232i231RLX9GHyjgJBmSddqfungknHWx64WamvTbrKoZt", realFillPriceUsd: 1.47 / 66030.11677 },
+    // TripleT (tail_trades id 76): real swap received 0.071114203 SOL ($6.98) for 561.712761 tokens.
+    { ownExitTxSignature: "2jKar83zAGnpdQ8worUibnJ6BgMyRwDg6KEK4Yuc8hYRHFFgTGT36HhVpS7hqva1WMhGt3QxJ5DHCUe54sDh351d", realFillPriceUsd: 6.98 / 561.712761 },
+  ];
+
+  const select = db.prepare(
+    `SELECT id, quantity, usd_size, sim_entry_fill_price_usd, wallet_exit_price_usd FROM tail_trades WHERE own_exit_tx_signature = ?`,
+  );
+  const update = db.prepare(
+    `UPDATE tail_trades SET sim_exit_fill_price_usd = @simExitFillPriceUsd, pnl_usd = @pnlUsd, pnl_pct = @pnlPct, exit_slippage_vs_wallet_pct = @exitSlippageVsWalletPct WHERE id = @id`,
+  );
+
+  for (const c of corrections) {
+    const row = select.get(c.ownExitTxSignature) as
+      | { id: number; quantity: number; usd_size: number; sim_entry_fill_price_usd: number; wallet_exit_price_usd: number | null }
+      | undefined;
+    if (!row || row.wallet_exit_price_usd == null) continue;
+
+    const pnlUsd = (c.realFillPriceUsd - row.sim_entry_fill_price_usd) * row.quantity;
+    const pnlPct = (pnlUsd / row.usd_size) * 100;
+    const exitSlippageVsWalletPct = ((c.realFillPriceUsd - row.wallet_exit_price_usd) / row.wallet_exit_price_usd) * 100;
+
+    update.run({
+      id: row.id,
+      simExitFillPriceUsd: c.realFillPriceUsd,
+      pnlUsd,
+      pnlPct,
+      exitSlippageVsWalletPct,
+    });
+  }
 }
 
 export interface TailWalletRow {
