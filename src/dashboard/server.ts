@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { env } from "../config/env.js";
 import { getBotWalletBalanceUsd } from "../execution/liveTrading.js";
+import { getBotPublicKeyString } from "../solana/keypair.js";
 import { loadTailConfig } from "../tail/config.js";
 import { createTailWebhookRouter } from "../tail/webhook.js";
 import { createTailDashboardRouter } from "../tail/dashboardRoutes.js";
@@ -35,17 +36,29 @@ export function createDashboardServer() {
   // Live wallet balance -- only meaningful once BOT_PRIVATE_KEY is set
   // (paper mode has no on-chain wallet to check). Separate from
   // /api/tail/status so a balance-lookup failure never breaks the rest of
-  // that endpoint's response.
+  // that endpoint's response. The public address (safe to show -- it's
+  // what you fund/look up on Solscan, unlike the private key) is derived
+  // from the keypair with no network call, so it's included even when the
+  // balance/price lookup itself fails (e.g. a price-provider outage
+  // shouldn't hide the one thing you'd need to go check the wallet
+  // directly on-chain).
   app.get("/api/live-balance", async (_req, res) => {
     if (!env.BOT_PRIVATE_KEY) {
       res.json({ available: false, reason: "BOT_PRIVATE_KEY not set" });
       return;
     }
+    let address: string | undefined;
+    try {
+      address = getBotPublicKeyString();
+    } catch {
+      // Malformed BOT_PRIVATE_KEY -- fall through, the balance fetch below
+      // will hit the same error and produce a proper reason string.
+    }
     try {
       const balanceUsd = await getBotWalletBalanceUsd();
-      res.json({ available: true, balanceUsd });
+      res.json({ available: true, balanceUsd, address });
     } catch (err) {
-      res.json({ available: false, reason: err instanceof Error ? err.message : String(err) });
+      res.json({ available: false, reason: err instanceof Error ? err.message : String(err), address });
     }
   });
 

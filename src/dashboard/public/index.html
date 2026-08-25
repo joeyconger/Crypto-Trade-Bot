@@ -805,11 +805,14 @@
         headerLiveBalance.style.display = "";
         try {
           const bal = await fetchJson("/api/live-balance");
-          liveBalanceNote.innerHTML = bal.available
+          const addressLink = bal.address
+            ? ` &middot; <a href="https://solscan.io/account/${encodeURIComponent(bal.address)}" target="_blank" rel="noopener" style="color:inherit" title="${esc(bal.address)}">${esc(bal.address.slice(0, 4))}&hellip;${esc(bal.address.slice(-4))}</a>`
+            : "";
+          liveBalanceNote.innerHTML = (bal.available
             ? `Live wallet balance: <strong>${fmtUsd(bal.balanceUsd)}</strong>`
-            : `Live wallet balance unavailable: ${esc(bal.reason)}`;
+            : `Live wallet balance unavailable: ${esc(bal.reason)}`) + addressLink;
           headerLiveBalanceValue.innerHTML = bal.available ? fmtUsd(bal.balanceUsd) : "&mdash;";
-          headerLiveBalanceValue.title = bal.available ? "" : (bal.reason || "");
+          headerLiveBalanceValue.title = bal.address ? `${bal.address}${bal.available ? "" : " -- " + (bal.reason || "")}` : (bal.reason || "");
         } catch {
           liveBalanceNote.textContent = "Live wallet balance unavailable right now.";
           headerLiveBalanceValue.innerHTML = "&mdash;";

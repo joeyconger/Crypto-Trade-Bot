@@ -25,3 +25,8 @@ export function getBotKeypair(): Keypair {
   cachedKeypair = Keypair.fromSecretKey(secretKey);
   return cachedKeypair;
 }
+
+/** The bot wallet's public address -- safe to display/share (unlike BOT_PRIVATE_KEY itself), needed to fund the wallet or look it up on Solscan. */
+export function getBotPublicKeyString(): string {
+  return getBotKeypair().publicKey.toBase58();
+}
