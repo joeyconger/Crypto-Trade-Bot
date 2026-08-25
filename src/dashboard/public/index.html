@@ -494,7 +494,7 @@
           style="flex:1;min-width:220px;padding:6px 10px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-primary);font-family:inherit" />
         <input id="tailAddWalletLabel" type="text" placeholder="Label (optional)" spellcheck="false"
           style="width:140px;padding:6px 10px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-primary);font-family:inherit" />
-        <button type="submit">Add wallet</button>
+        <button type="submit" id="tailAddWalletSubmit">Add wallet</button>
       </form>
       <p class="research-note" id="tailAddWalletStatus" style="margin-top:8px"></p>
     </div>
@@ -843,7 +843,8 @@
             <span class="pill ${w.enabled ? "yes" : "no"}">${w.enabled ? "tailing" : "removed"}</span>
             <span style="font-weight:600">${esc(w.label || (w.address.slice(0, 4) + "…" + w.address.slice(-4)))}</span>
             <span class="research-note" style="margin:0;font-size:0.85em" title="${esc(w.address)}">${esc(w.address.slice(0, 4))}&hellip;${esc(w.address.slice(-4))}</span>
-            ${w.enabled ? `<button type="button" class="danger" style="margin-left:auto;padding:2px 10px" onclick="removeTailWallet('${esc(w.address)}')">Remove</button>` : ""}
+            ${w.enabled ? `<button type="button" style="margin-left:auto;padding:2px 10px" onclick="editTailWalletLabel('${esc(w.address)}', '${esc((w.label || "").replace(/'/g, "\\'"))}')">Edit label</button>` : ""}
+            ${w.enabled ? `<button type="button" class="danger" style="padding:2px 10px" onclick="removeTailWallet('${esc(w.address)}')">Remove</button>` : ""}
           </div>
         `).join("")
         : `<span class="research-note" style="margin:0">No wallets tailed yet -- add one below.</span>`;
@@ -904,6 +905,24 @@
     }
   }
 
+  // Adding a wallet whose address is already tailed is an upsert on the
+  // server (see db.ts's upsertTailWallet) -- resubmitting an existing
+  // address just updates its label, it doesn't create a duplicate. This
+  // flag only changes the button text/status wording so an edit doesn't
+  // read as "Added" -- the request itself is identical either way.
+  let tailEditingWalletAddress = null;
+
+  function editTailWalletLabel(address, label) {
+    document.getElementById("tailAddWalletAddress").value = address;
+    const labelInput = document.getElementById("tailAddWalletLabel");
+    labelInput.value = label;
+    tailEditingWalletAddress = address;
+    document.getElementById("tailAddWalletSubmit").textContent = "Update label";
+    document.getElementById("tailAddWalletStatus").textContent = "";
+    labelInput.focus();
+    labelInput.select();
+  }
+
   document.getElementById("tailAddWalletForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const addressInput = document.getElementById("tailAddWalletAddress");
@@ -911,8 +930,9 @@
     const statusEl = document.getElementById("tailAddWalletStatus");
     const address = addressInput.value.trim();
     const label = labelInput.value.trim();
+    const isEdit = tailEditingWalletAddress === address;
 
-    statusEl.textContent = "Adding…";
+    statusEl.textContent = isEdit ? "Updating…" : "Adding…";
     statusEl.className = "research-note";
     try {
       const res = await fetch("/api/tail/wallets", {
@@ -922,19 +942,23 @@
       });
       const body = await res.json();
       if (!res.ok) {
-        statusEl.textContent = body.error || "Failed to add wallet.";
+        statusEl.textContent = body.error || "Failed to save.";
         statusEl.style.color = "var(--critical)";
         return;
       }
       addressInput.value = "";
       labelInput.value = "";
+      tailEditingWalletAddress = null;
+      document.getElementById("tailAddWalletSubmit").textContent = "Add wallet";
       statusEl.style.color = "";
-      statusEl.textContent = body.heliusSynced
-        ? "Added -- now tailing, Helius webhook updated automatically."
-        : `Added to the dashboard, but Helius wasn't updated automatically (${body.heliusError || body.heliusSkippedReason || "unknown reason"}) -- add it in Helius's dashboard too.`;
+      statusEl.textContent = isEdit
+        ? "Label updated."
+        : body.heliusSynced
+          ? "Added -- now tailing, Helius webhook updated automatically."
+          : `Added to the dashboard, but Helius wasn't updated automatically (${body.heliusError || body.heliusSkippedReason || "unknown reason"}) -- add it in Helius's dashboard too.`;
       await refreshTail();
     } catch (err) {
-      statusEl.textContent = "Failed to add wallet: " + (err && err.message ? err.message : String(err));
+      statusEl.textContent = "Failed to save: " + (err && err.message ? err.message : String(err));
       statusEl.style.color = "var(--critical)";
     }
   });
