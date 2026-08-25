@@ -708,7 +708,7 @@
         <td><span class="pill ${t.status === 'closed' ? 'yes' : t.status.startsWith('unfillable') ? 'no' : 'none'}">${t.status.replace('_', ' ')}</span>${
           t.is_live
             ? ` <a class="pill no" style="text-decoration:none" href="${t.own_entry_tx_signature ? `https://solscan.io/tx/${encodeURIComponent(t.own_entry_tx_signature)}` : '#'}" target="_blank" rel="noopener" title="${t.own_entry_tx_signature ? 'Entry: ' + t.own_entry_tx_signature : ''}${t.own_exit_tx_signature ? ' / Exit: ' + t.own_exit_tx_signature : ''}">live</a>`
-            : ''
+            : ' <span class="pill none">paper</span>'
         }${t.closed_manually ? ' <span class="pill none" title="Closed via the dashboard\'s Sell button, not a detected wallet sell">manual</span>' : ''}</td>
         <td>${fmtUsd(t.usd_size)}</td>
         <td>${fmtPrice(t.wallet_entry_price_usd)}</td>
@@ -756,7 +756,7 @@
       return `
       <tr>
         <td class="sym" title="${esc(t.wallet_address)}">${esc(labelFor(t.wallet_address))}</td>
-        <td class="sym"><a href="https://solscan.io/token/${encodeURIComponent(t.token_address)}" target="_blank" rel="noopener" title="${esc(t.token_address)}" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor">${esc(t.token_symbol)}</a>${t.is_live ? ' <span class="pill no">live</span>' : ''}</td>
+        <td class="sym"><a href="https://solscan.io/token/${encodeURIComponent(t.token_address)}" target="_blank" rel="noopener" title="${esc(t.token_address)}" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor">${esc(t.token_symbol)}</a> ${t.is_live ? '<span class="pill no">live</span>' : '<span class="pill none">paper</span>'}</td>
         <td>${fmtPrice(entryPrice)}</td>
         <td>${fmtPrice(currentPrice)}</td>
         <td>${pnlUsd == null ? "&mdash;" : `<span class="${pnlUsd >= 0 ? 'up' : 'down'}">${fmtUsd(pnlUsd)}</span>`}</td>
