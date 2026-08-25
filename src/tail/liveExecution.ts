@@ -13,6 +13,33 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Serializes every live buy/sell so at most one is ever mid-flight against
+ * the wallet at a time. Both executeLiveBuy and executeLiveSell measure
+ * proceeds/fills via a before/after balance delta on shared wallet state
+ * (SOL balance for sells and the buy's fee-reserve check, the traded
+ * token's balance for buys) -- if a SECOND live trade executes while the
+ * first is still mid-swap, its own balance movement can land inside the
+ * first trade's before/after window and get misattributed, corrupting the
+ * measured fill price. Confirmed live: a tailed wallet dumping several
+ * positions within the same few seconds (webhook.ts dispatches each
+ * detected trade as an independent fire-and-forget call, with nothing
+ * previously serializing them) produced a recorded live-sell price 7-8x
+ * the real one on more than one trade in that same window. Serializing
+ * trades one-at-a-time costs a little latency under a burst but makes
+ * every fill measurement exclusive and correct -- correctness matters far
+ * more than throughput for a bot trading real funds at this volume.
+ */
+let liveExecutionChain: Promise<unknown> = Promise.resolve();
+function serializeLiveExecution<T>(fn: () => Promise<T>): Promise<T> {
+  const result = liveExecutionChain.then(fn, fn);
+  liveExecutionChain = result.then(
+    () => {},
+    () => {},
+  );
+  return result;
+}
+
 export function todayUtcDateString(): string {
   return new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD', UTC by construction (toISOString is always UTC)
 }
@@ -72,9 +99,17 @@ export type LiveBuyResult =
  * fetching the wallet's balance/SOL price itself -- the caller already has
  * one fresh read (it needed totalBalanceUsd to compute usdSize in the first
  * place), and re-fetching here would triple the price-provider calls this
- * one live buy makes for no benefit.
+ * one live buy makes for no benefit. That snapshot can go slightly stale if
+ * this call is queued behind another live trade (see serializeLiveExecution
+ * below) -- an acceptable tradeoff: the balance/price it's stale against
+ * only affects sizing and the fee-reserve check, never the fill price
+ * itself, which is still always read fresh at actual execution time.
  */
-export async function executeLiveBuy(tokenAddress: string, usdSize: number, wallet: BotWalletSnapshot): Promise<LiveBuyResult> {
+export function executeLiveBuy(tokenAddress: string, usdSize: number, wallet: BotWalletSnapshot): Promise<LiveBuyResult> {
+  return serializeLiveExecution(() => executeLiveBuyInner(tokenAddress, usdSize, wallet));
+}
+
+async function executeLiveBuyInner(tokenAddress: string, usdSize: number, wallet: BotWalletSnapshot): Promise<LiveBuyResult> {
   // Everything below is wrapped in one try/catch, not just the swap itself
   // -- by the time this is called, mirror.ts has already inserted a
   // 'pending' tail_trades row, and the only thing that marks it
@@ -148,7 +183,11 @@ export type LiveSellResult =
  * summing transfer legs would have -- see parseSwap.ts's netLegsForWallet
  * docstring for that unrelated but analogous bug.
  */
-export async function executeLiveSell(tokenAddress: string): Promise<LiveSellResult> {
+export function executeLiveSell(tokenAddress: string): Promise<LiveSellResult> {
+  return serializeLiveExecution(() => executeLiveSellInner(tokenAddress));
+}
+
+async function executeLiveSellInner(tokenAddress: string): Promise<LiveSellResult> {
   try {
     const balance = await getTokenBalanceRaw(tokenAddress);
     if (!balance || balance.amountRaw === "0") {
