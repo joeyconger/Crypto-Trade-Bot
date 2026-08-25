@@ -273,6 +273,16 @@ default 100 = 1%) on both entries and exits (including the manual Sell
 button). Fill quantities are always read back from the chain, not a swap
 quote's estimate, so they're correct regardless of slippage.
 
+**Max entry slippage** (`TAIL_MAX_ENTRY_SLIPPAGE_PCT`, default 15%, applies
+to both paper and live): if the token's current price is already more than
+this % above the tailed wallet's own entry price by the time the buy is
+detected, the buy is skipped entirely -- no position opened, nothing spent.
+This is checked once, at detection time, before any sizing or execution.
+It's the single biggest driver of lag cost on fast-moving tokens -- catching
+a wallet's entry plus the few seconds of detection/fill lag can otherwise
+mean landing an entry 30-60%+ above what the wallet actually paid, a price
+that no longer makes the trade worth mirroring.
+
 **Daily loss cap**: if the live wallet's USD balance drops more than
 `TAIL_LIVE_DAILY_LOSS_LIMIT_PCT` (default 20%) from its value at the start of
 the current UTC day, new live buys pause automatically until the next UTC

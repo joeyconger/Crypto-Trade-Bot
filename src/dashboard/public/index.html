@@ -803,7 +803,9 @@
         modeBadge.innerHTML = `<span class="dot"></span>LIVE -- real funds`;
         modeNote.innerHTML =
           `Mirrors tailed wallets' on-chain swaps with <strong>real Jupiter swaps</strong>, sized off this wallet's ` +
-          `actual current balance. ${status.liveSlippageBps / 100}% slippage tolerance. ` +
+          `actual current balance. ${status.liveSlippageBps / 100}% slippage tolerance. Buys are skipped entirely if ` +
+          `the token is already more than ${status.maxEntrySlippagePct}% above the wallet's entry price by the time ` +
+          `it's detected. ` +
           (status.liveDailyLossCapEnabled
             ? `A ${status.liveDailyLossLimitPct}% daily loss cap pauses new buys (not existing exits) if the wallet ` +
               `drops that much since UTC midnight.`
@@ -832,7 +834,8 @@
           `Mirrors a specific wallet's on-chain swaps into simulated paper trades to test whether copy-tailing is ` +
           `viable. "Realistic" fills wait a simulated pipeline delay before pricing, the same way real execution ` +
           `would lag the wallet; "if filled at wallet's price" shows what the same trade would have made with ` +
-          `zero lag, isolating how much of the result is pure latency cost.`;
+          `zero lag, isolating how much of the result is pure latency cost. Buys are skipped entirely if the token ` +
+          `is already more than ${status.maxEntrySlippagePct}% above the wallet's entry price by the time it's detected.`;
         liveBalanceNote.style.display = "none";
         headerLiveBalance.style.display = "none";
       }

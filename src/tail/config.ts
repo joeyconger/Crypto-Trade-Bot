@@ -13,6 +13,10 @@ export interface TailConfig {
   positionSizePct: number;
   simulatedDelaySeconds: number;
   startingBalanceUsd: number;
+  // If the token's current price at detection time is already this much %
+  // above the tailed wallet's own entry price, the buy is skipped entirely
+  // -- applies to both paper and live. See env.ts's TAIL_MAX_ENTRY_SLIPPAGE_PCT.
+  maxEntrySlippagePct: number;
   webhookSecret: string | undefined;
   // Helius webhook ID to keep in sync when a wallet is added/removed via the
   // dashboard -- see src/data/heliusWebhook.ts. Undefined means that sync is
@@ -60,6 +64,7 @@ export function loadTailConfig(): TailConfig {
     positionSizePct: env.TAIL_POSITION_SIZE_PCT,
     simulatedDelaySeconds: env.TAIL_SIMULATED_DELAY_SECONDS,
     startingBalanceUsd: env.TAIL_STARTING_BALANCE_USD,
+    maxEntrySlippagePct: env.TAIL_MAX_ENTRY_SLIPPAGE_PCT,
     webhookSecret: env.TAIL_WEBHOOK_SECRET,
     heliusWebhookId: env.TAIL_HELIUS_WEBHOOK_ID,
     liveTradingEnabled: env.tailLiveTradingEnabled,

@@ -72,6 +72,36 @@ export async function handleParsedBuy(
   }
 
   const walletEntryPriceUsd = (swap.quoteAmount * quote.priceUsd) / swap.tokenAmount;
+
+  // Skips the buy entirely -- no position opened, live or paper, nothing
+  // spent -- if the token has already moved too far above the wallet's own
+  // entry price by the time we detect it. This is the single biggest lag-
+  // cost driver seen live: on fast-moving tokens, the wallet's own entry
+  // plus the detection+fill lag can mean OUR fill lands 30-60%+ above
+  // theirs, well past the point where mirroring the trade still makes
+  // sense. Checked here (once, at detection time) rather than after
+  // spending money and finding out -- cheaper and, for live, safer.
+  try {
+    const currentOverview = await getTokenOverview(swap.tokenAddress);
+    const currentSlippagePct = ((currentOverview.price - walletEntryPriceUsd) / walletEntryPriceUsd) * 100;
+    if (currentSlippagePct > config.maxEntrySlippagePct) {
+      insertTailWebhookLog(
+        walletAddress,
+        swap.txSignature,
+        "parse_error",
+        `detected a buy but the token is already ${currentSlippagePct.toFixed(1)}% above the wallet's entry price ` +
+          `(cap ${config.maxEntrySlippagePct}%) -- skipped, no position opened`,
+      );
+      return;
+    }
+  } catch (err) {
+    // Best-effort: a failed price lookup here shouldn't block a trade that
+    // would otherwise be fine -- fall through and let the normal pricing/
+    // sizing calls below (which need the same provider) surface the real
+    // error if it's still failing.
+    void err;
+  }
+
   // Live sizing is a % of the wallet's REAL current balance; paper sizing is
   // a % of the fictional TAIL_STARTING_BALANCE_USD -- these are deliberately
   // different bases, not interchangeable. This runs before any DB row

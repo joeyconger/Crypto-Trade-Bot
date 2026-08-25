@@ -90,6 +90,7 @@ export function createTailDashboardRouter(config: TailConfig): Router {
       positionSizePct: config.positionSizePct,
       simulatedDelaySeconds: config.simulatedDelaySeconds,
       startingBalanceUsd: config.startingBalanceUsd,
+      maxEntrySlippagePct: config.maxEntrySlippagePct,
       // Whether adding/removing a wallet in the dashboard will also update
       // the Helius webhook automatically, or just this app's own DB.
       heliusSyncConfigured: !!config.heliusWebhookId,

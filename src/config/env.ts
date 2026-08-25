@@ -53,6 +53,14 @@ const envSchema = z.object({
   // real execution latency, not an artificial one.
   TAIL_SIMULATED_DELAY_SECONDS: z.coerce.number().nonnegative().default(5),
   TAIL_STARTING_BALANCE_USD: z.coerce.number().positive().default(1000),
+  // If the token's current price (checked the instant a buy is detected)
+  // is already more than this % above the tailed wallet's own entry
+  // price, the buy is skipped entirely -- no position opened, live or
+  // paper. Guards against chasing a token that already pumped hard in the
+  // detection+fill lag window (observed live: entries 30-60%+ above the
+  // wallet's own price on fast-moving tokens), which is the single
+  // biggest lag-cost driver seen so far.
+  TAIL_MAX_ENTRY_SLIPPAGE_PCT: z.coerce.number().positive().default(15),
   // Shared secret expected on incoming webhook calls (the exact value you
   // configure as the "Authorization Header" when creating the Helius
   // webhook). Optional but strongly recommended -- unset means the webhook
