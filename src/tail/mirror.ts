@@ -1,6 +1,6 @@
 import type { ParsedSwap } from "./parseSwap.js";
 import type { TailConfig } from "./config.js";
-import { resolveTokenSymbol } from "../data/resolveTokenSymbol.js";
+import { shortenedTokenLabel } from "../data/resolveTokenSymbol.js";
 import { getTokenOverview } from "../data/priceProvider.js";
 import { simulateDelayedFill, getQuoteUsdPrice } from "./simulateFill.js";
 import { executeLiveBuy, executeLiveSell } from "./liveExecution.js";
@@ -60,7 +60,21 @@ export async function handleParsedBuy(
     return;
   }
 
-  const quote = await getQuoteUsdPrice(swap.quoteMint, swap.quoteIsStable);
+  // The three lookups below -- quote-leg USD pricing, the token's current
+  // price (for the slippage-cap check just below, and its display symbol),
+  // and (live only) the wallet's current balance -- are independent of each
+  // other, so they're fired together instead of one-at-a-time. Every one of
+  // these round-trips happens before the live swap can fire, so collapsing
+  // three sequential network calls into one is a direct cut to the window
+  // between detecting the wallet's buy and landing our own.
+  const currentOverviewPromise = getTokenOverview(swap.tokenAddress).catch(() => null);
+  // Started here but only awaited later (after the quote/slippage checks,
+  // which can return early) -- caught eagerly so an early return doesn't
+  // leave an unawaited rejection behind.
+  const liveWalletSnapshotPromise = config.liveTradingEnabled ? getBotWalletSnapshot() : undefined;
+  liveWalletSnapshotPromise?.catch(() => {});
+
+  const [quote, currentOverview] = await Promise.all([getQuoteUsdPrice(swap.quoteMint, swap.quoteIsStable), currentOverviewPromise]);
   if (!quote.ok) {
     insertTailWebhookLog(
       walletAddress,
@@ -81,8 +95,10 @@ export async function handleParsedBuy(
   // theirs, well past the point where mirroring the trade still makes
   // sense. Checked here (once, at detection time) rather than after
   // spending money and finding out -- cheaper and, for live, safer.
-  try {
-    const currentOverview = await getTokenOverview(swap.tokenAddress);
+  // currentOverview is null when the lookup above failed -- best-effort,
+  // same as before: a failed price lookup here shouldn't block a trade that
+  // would otherwise be fine.
+  if (currentOverview) {
     const currentSlippagePct = ((currentOverview.price - walletEntryPriceUsd) / walletEntryPriceUsd) * 100;
     if (currentSlippagePct > config.maxEntrySlippagePct) {
       insertTailWebhookLog(
@@ -94,12 +110,6 @@ export async function handleParsedBuy(
       );
       return;
     }
-  } catch (err) {
-    // Best-effort: a failed price lookup here shouldn't block a trade that
-    // would otherwise be fine -- fall through and let the normal pricing/
-    // sizing calls below (which need the same provider) surface the real
-    // error if it's still failing.
-    void err;
   }
 
   // Live sizing is a % of the wallet's REAL current balance; paper sizing is
@@ -110,14 +120,15 @@ export async function handleParsedBuy(
   // generic handler_error coverage-gap catch, which would silently drop a
   // real buy signal with a vague error instead of a wallet-attributed one.
   let usdSize: number;
-  // Captured once here and threaded into executeLiveBuy below -- a single
-  // shared read instead of three independent balance/price lookups spread
-  // across sizing, the daily-loss-cap check, and the swap conversion, which
-  // an earlier version of this path did (see BotWalletSnapshot's docstring).
+  // Captured once here (kicked off above, alongside quote/currentOverview)
+  // and threaded into executeLiveBuy below -- a single shared read instead
+  // of three independent balance/price lookups spread across sizing, the
+  // daily-loss-cap check, and the swap conversion, which an earlier version
+  // of this path did (see BotWalletSnapshot's docstring).
   let liveWalletSnapshot: BotWalletSnapshot | undefined;
   if (config.liveTradingEnabled) {
     try {
-      liveWalletSnapshot = await getBotWalletSnapshot();
+      liveWalletSnapshot = await liveWalletSnapshotPromise!;
       usdSize = (liveWalletSnapshot.totalBalanceUsd * config.positionSizePct) / 100;
     } catch (err) {
       insertTailWebhookLog(
@@ -133,10 +144,17 @@ export async function handleParsedBuy(
   }
   const entryDetectionLatencyMs = detectedAt.getTime() - new Date(swap.onchainAt).getTime();
 
+  // Reuses the symbol from the current-price overview already fetched above
+  // (for the slippage check) instead of resolveTokenSymbol's own lookup,
+  // which would just repeat the exact same call. Falls back to the same
+  // shortened-address placeholder resolveTokenSymbol uses, self-healed to a
+  // real ticker on a later /trades read (see dashboardRoutes.ts).
+  const tokenSymbol = currentOverview?.symbol || shortenedTokenLabel(swap.tokenAddress);
+
   const tradeId = insertPendingTailEntry({
     walletAddress,
     tokenAddress: swap.tokenAddress,
-    tokenSymbol: await resolveTokenSymbol(swap.tokenAddress),
+    tokenSymbol,
     usdSize,
     walletEntryPriceUsd,
     walletEntryTxSignature: swap.txSignature,

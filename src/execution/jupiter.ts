@@ -58,9 +58,14 @@ async function buildAndSendSwap(quoteResponse: any): Promise<{ signature: string
   const tx = VersionedTransaction.deserialize(Buffer.from(body.swapTransaction, "base64"));
   tx.sign([keypair]);
 
-  const signature = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-
-  const latestBlockhash = await connection.getLatestBlockhash();
+  // Independent calls -- getLatestBlockhash doesn't need the send to have
+  // happened first, it's only used below to know when confirmTransaction
+  // should give up polling. Running them together instead of sequentially
+  // saves a full RPC round-trip before confirmation polling even starts.
+  const [signature, latestBlockhash] = await Promise.all([
+    connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 }),
+    connection.getLatestBlockhash(),
+  ]);
   const confirmation = await connection.confirmTransaction({ signature, ...latestBlockhash }, "confirmed");
   if (confirmation.value.err) {
     throw new Error(`Swap ${signature} failed on-chain: ${JSON.stringify(confirmation.value.err)}`);
